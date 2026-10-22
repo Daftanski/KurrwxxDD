@@ -1,0 +1,29 @@
+# -----------------------------------------------------------------------------
+# post-wa-uefi-dev.simics
+#
+# Runs the original post-cnic-shared-workarounds.simics, then plugs in our USB
+# drive and logs the UEFI serial console. Runs before boot
+# (vpc_launch_uefi_dev.simics points $post_wa_script here).
+# -----------------------------------------------------------------------------
+
+# 1) Run the original post-workaround script unchanged.
+run-command-file (lookup-file "post-cnic-shared-workarounds.simics")
+
+# 1b) NSS debug register (flash 0x5420): set bit 5 (package download workaround).
+$current_val = (cnic.imc.flash.read 0x5420)
+cnic.imc.flash.write 0x5420 ($current_val | (1 << 5))
+
+# 2) Plug our USB drive (built by make-usb-drive.sh) into a free USB3 port.
+#    Port 4 is already used by the target's own simics_agent_binaries disk.
+#    In the UEFI Shell: fs0: = NVMe disk, fs1: = our USB drive, fs2: = agent disk.
+load-module usb-disk
+new-usb3-disk file = (lookup-file "%script%/usb-drive.img") name = "usb_drive_id00"
+connect usb_drive_id00.connector_usb_host "summitville.xhci_generic.usb3_port[3]"
+
+# 3) Save everything printed on the UEFI serial console to a file.
+#    This is the S3M UART, the console where the UEFI Shell runs.
+$uefi_console = summitville.mb.s3m0.s3m[0].uart_console.con
+$uefi_console.capture-start -overwrite "development/logs/uefi_serial_vm1.log"
+
+# 4) Open the UEFI console over telnet: telnet localhost 33441 (vm 1).
+$uefi_console.telnet-setup port = (33440 + $vm_id)

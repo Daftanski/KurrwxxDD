@@ -1,0 +1,18 @@
+%YAML 1.2
+---
+description: BIOS knobs for UEFI Simics development.
+# Add more knobs to bios_knobs_string_3, comma-separated, e.g.
+#   "SetShellFirst=0x1,ShellEntryTime=0x1"
+# Knob names and descriptions: targets/summitville/bios-knob-params-list.yml
+# in the Summitville Simics package.
+#
+# The numbered "_3" slot is used so these knobs are appended to the knobs the
+# VPC scripts already pass (knobs:bios_knobs / knobs:bios_knobs_string).
+# bios_knobs_3 is only a name; it is added to the patched BIOS file name.
+args:
+  knobs:
+    bios_knobs_3: "uefi_dev"
+    # SetShellFirst=0x1     -> boot straight into the UEFI Internal Shell
+    # EfiNetworkSupport=0x1 -> enable UEFI network stack (PXE/HTTP boot)
+    bios_knobs_string_3: "SetShellFirst=0x1,EfiNetworkSupport=0x1"
+...
