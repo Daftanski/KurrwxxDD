@@ -21,7 +21,7 @@ echo "Fetching kernel config from ${SIMICS_HOST}"
 ssh "$SIMICS_HOST" "$SIMICS_SCRIPT config" > "$KERNEL_DIR/.config"
 
 make olddefconfig
-make -j"$(nproc)"
+make -j"${JOBS:-$(nproc)}"
 
 # stale module trees from earlier builds land in the archive otherwise
 rm -rf "$MODULES_DIR"
