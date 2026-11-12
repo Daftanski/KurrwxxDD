@@ -1,0 +1,46 @@
+Simics - UEFI (UEFI shell, driver work)
+=======================================
+Scope:   uefi-dev: boot to the UEFI shell, load and test an EFI
+         driver (example: CNIC driver E4999X10.EFI)
+Updated: 2026-11-10
+Related: 01-overview.txt, development/uefi-dev/readme.txt,
+         development/uefi-dev/doc/02-test-guide.txt
+IPs:     ../../../config.txt only
+
+1. Flow
+-------
+- Framework to a host: development/setup-uefi-dev.sh <host ip>
+  (never overwrites EFI files on the host).
+- Put an EFI on the host: copy to core/usb-drive/, then
+  core/usb-replug.sh (~7 s, no reboot) or core/restart.sh.
+  CNIC: nic-core/EXEC_CNIC_BUILD.sh <host ip> does build + copy +
+  replug.
+- core/swap-driver.sh: replug + unload old + load new (~70 s).
+- Tests run any EFI: DRIVER=<name>.EFI.
+
+2. UEFI shell
+-------------
+- fs0: NVMe (Linux disk), fs1: USB drive (our files), fs2: Simics
+  agent disk. Tests need fs1:. If not: core/usb-port (USB port).
+- eth0 = i210 (BIOS driver), eth1..eth8 = CNIC ports.
+- Shell output has ANSI codes (also inside words); serial log
+  logs/uefi_serial.log is flushed late: strip codes, wait for a
+  marker line. Driver debug prints mix with shell output.
+- No ifconfig6 / ping6 / tftp / http in the shell: misc/tools/netcmds/.
+
+3. Tests
+--------
+- misc/run-tests.sh [restart|load|net|func|all|<test>].
+  Full run ~45 min per host.
+- Read the test's "Needs:" header first.
+- Port addresses, MACs, taps: misc/lib.sh (one subnet per port).
+- tcpdump on host: tcpdump -eni cnic_tap_0_<port>.
+
+4. Host prerequisites (uefi-dev only)
+-------------------------------------
+- mtools: if missing, copy binary + mcopy/mdir links to
+  /root/.local/bin, use PATH=/root/.local/bin:$PATH.
+- $bios in startup_scripts/vpc_launch.simics: release BIOS
+  (keep a .orig backup).
+- BIOS knob engine fails: copy cached bios_knobs/<hash>/ from a
+  working host.

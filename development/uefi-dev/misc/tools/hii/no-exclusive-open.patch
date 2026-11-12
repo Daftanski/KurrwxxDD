@@ -1,0 +1,79 @@
+diff --git a/src/commands/get.rs b/src/commands/get.rs
+index e1a3a22..c379a44 100644
+--- a/src/commands/get.rs
++++ b/src/commands/get.rs
+@@ -57,7 +57,7 @@ pub fn get_value(ctx: &FormsetContext, hii_database: &HiiDatabase, hii_string: &
+     };
+ 
+     // Get the device path from the driver handle
+-    let device_path = match uefi::boot::open_protocol_exclusive::<DevicePath>(driver_handle) {
++    let device_path = match crate::hii::protocol::open_shared::<DevicePath>(driver_handle) {
+         Ok(dp) => dp,
+         Err(err) => {
+             println!("Failed to open DevicePath on driver handle: {:?}", err.status());
+diff --git a/src/commands/set.rs b/src/commands/set.rs
+index 2d52a3f..104213c 100644
+--- a/src/commands/set.rs
++++ b/src/commands/set.rs
+@@ -76,7 +76,7 @@ pub fn set_value(ctx: &FormsetContext, hii_database: &HiiDatabase, hii_string: &
+     };
+ 
+     // Get the device path from the driver handle
+-    let device_path = match uefi::boot::open_protocol_exclusive::<DevicePath>(driver_handle) {
++    let device_path = match crate::hii::protocol::open_shared::<DevicePath>(driver_handle) {
+         Ok(dp) => dp,
+         Err(err) => {
+             println!("Failed to open DevicePath on driver handle: {:?}", err.status());
+diff --git a/src/commands/show.rs b/src/commands/show.rs
+index 4b5f680..2f81475 100644
+--- a/src/commands/show.rs
++++ b/src/commands/show.rs
+@@ -50,7 +50,7 @@ pub fn show_form(ctx: &FormsetContext, hii_database: &HiiDatabase, hii_string: &
+     // Resolve device path once for all ExtractConfig calls
+     let driver_handle = hii_database.package_list_driver_handle(handle)?;
+     let device_path =
+-        uefi::boot::open_protocol_exclusive::<DevicePath>(driver_handle)?;
++        crate::hii::protocol::open_shared::<DevicePath>(driver_handle)?;
+     let dp_bytes = device_path.as_bytes();
+ 
+     // Evaluate conditional expressions at runtime using ExtractConfig values.
+diff --git a/src/hii/protocol.rs b/src/hii/protocol.rs
+index b7b7cb0..9ecc656 100644
+--- a/src/hii/protocol.rs
++++ b/src/hii/protocol.rs
+@@ -4,9 +4,9 @@ use std::ptr::NonNull;
+ use std::string::String;
+ use std::vec;
+ use std::vec::Vec;
+-use uefi::boot::{self, ScopedProtocol, SearchType};
++use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, SearchType};
+ use uefi::prelude::*;
+-use uefi::proto::unsafe_protocol;
++use uefi::proto::{unsafe_protocol, ProtocolPointer};
+ use uefi::{guid, Char16 as UefiChar16, CStr16, Error, Identify, StatusExt};
+ 
+ use hii_parser::parser::{QuestionValue, ValueWidth};
+@@ -338,6 +338,14 @@ pub fn open_hii_database() -> uefi::Result<ScopedProtocol<HiiDatabase>> {
+     boot::open_protocol_exclusive::<HiiDatabase>(handle)
+ }
+ 
++/// Open a protocol on a driver handle without taking it over.
++/// EXCLUSIVE would disconnect every driver using the handle (SNP, MNP, IP...).
++pub fn open_shared<P: ProtocolPointer + ?Sized>(handle: Handle) -> uefi::Result<ScopedProtocol<P>> {
++    let params = OpenProtocolParams { handle, agent: boot::image_handle(), controller: None };
++    // SAFETY: the protocol is only read while the driver stays loaded.
++    unsafe { boot::open_protocol::<P>(params, OpenProtocolAttributes::GetProtocol) }
++}
++
+ pub fn open_hii_string() -> uefi::Result<ScopedProtocol<HiiString>> {
+     let handles =
+         boot::locate_handle_buffer(SearchType::ByProtocol(&HiiString::GUID))?;
+@@ -442,7 +450,7 @@ pub(crate) fn try_callback_ordered_list_default(
+         return None;
+     }
+ 
+-    let proto = boot::open_protocol_exclusive::<HiiConfigAccess>(driver_handle).ok()?;
++    let proto = open_shared::<HiiConfigAccess>(driver_handle).ok()?;
+ 
+     let buf_len = *max_containers as usize * elem_size;
+     let mut buffer = vec![0u8; buf_len];

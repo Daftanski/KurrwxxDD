@@ -1,0 +1,560 @@
+Driver tests - how they work and what they check
+================================================
+Scope:   Simics tests in development/uefi-dev/misc/ (lib.sh, run-tests.sh,
+         tests/func/, tests/net/, tools/)
+Updated: 2026-10-30
+Related: 01-uefi-driver-model.txt (theory, read first)
+         03-glossary.txt
+         ../misc/readme.txt (rules, short)
+         11-results-driver.txt (status, findings, next tests)
+         10-plan-driver.txt (all levels L0-L9)
+         13-plan-generic.txt (other drivers)
+         12-plan-network.txt (network tests history)
+
+Who is this for: somebody who knows a bit of bash but never saw UEFI
+or these tests. "theory N" = section N of 01-uefi-driver-model.txt. Section 1-4 explain the machinery. Section 5 explains
+every functional test: the feature, why it matters, how it is tested,
+when it passes, what a failure means.
+
+
+1. The test setup in one picture
+--------------------------------
+Everything runs on the Simics host (a Linux machine). Simics simulates
+a whole server: CPU, BIOS, and our network card (8 ports).
+
+   Simics host (Linux, root)
+   +---------------------------------------------------------------+
+   |  run-tests.sh -> tests/func/load.sh  (bash)                    |
+   |        |                         ^                             |
+   |        | expect + telnet         | reads the log file          |
+   |        v localhost:33441         |                             |
+   |  +------------------- Simics -------------------+              |
+   |  |  serial console  ------------------------> logs/uefi_serial.log
+   |  |      |                                       |              |
+   |  |  UEFI Shell  (FS1:\>)                        |              |
+   |  |      | load E4999X10.EFI, dh, ping, ...      |              |
+   |  |  our driver  <->  simulated NIC, 8 ports     |              |
+   |  +------------------------------|---------------+              |
+   |                                 | port P = tap device          |
+   |  cnic_tap_0_0 .. cnic_tap_0_7  <-+  (host side of each port)    |
+   |  host tools: ping, tcpdump, dnsmasq, python3 http.server       |
+   +---------------------------------------------------------------+
+
+- The UEFI Shell is the "user" of the driver. Tests type Shell
+  commands and read what the Shell prints.
+- Each simulated port P is connected to a Linux tap device
+  cnic_tap_0_P. The host can ping UEFI through it, capture frames
+  (tcpdump) and run servers (DHCP, TFTP, HTTP).
+
+Addresses (lib.sh):
+    port P   UEFI eth<P+1>  192.168.P.101  MAC 0A:0P:00:08:03:18
+             host tap       192.168.P.200  cnic_tap_0_P
+
+
+2. How a test talks to the UEFI Shell
+-------------------------------------
+2.1 expect
+    "expect" is a tool that starts a program (here: telnet to the
+    Simics serial console), SENDS text to it and WAITS until some text
+    appears. Scripts are written in Tcl.
+
+        send "ping 192.168.0.200\r"
+        expect "FS1:"            ;# wait for the next Shell prompt
+
+    Waiting is important: the Shell is slow and drops keys typed while
+    a command still runs.
+
+2.2 One session = one expect script
+    lib.sh does not run expect for every command. It BUILDS one Tcl
+    script in the bash variable SCRIPT and runs it once at the end:
+
+        uefi_begin                   SCRIPT = "spawn telnet ...; ..."
+        uefi_load                    SCRIPT += send "load ..."; expect
+        uefi_cmd "drivers"           SCRIPT += send "drivers"; expect
+        uefi_end                     run: expect -c "$SCRIPT"
+
+    Why: one telnet connection, fast, and the order is exact.
+    Cost: bash cannot look at results DURING the session. Results are
+    read AFTER, from the log (2.3).
+
+2.3 Reading the output: the serial log and markers
+    Everything the Shell prints goes to logs/uefi_serial.log. The log
+    holds ALL sessions since boot. To find "our" part:
+
+        uefi_begin  sends  echo BEGIN-<test>-<pid>
+        uefi_end    sends  echo END-<test>-<pid>
+        uefi_log    prints only the lines between them, with CR and
+                    ANSI color codes removed (and saves /tmp/<test>.log)
+
+    Inside a session, a test marks parts:
+
+        uefi_part 3          sends "echo PART 3"
+        log_part "$OUT" 3    lines from "PART 3" to the next "PART"
+
+    Example (bind.sh, cycle 1 and 2):
+
+        PART 1
+        FS1:\> disconnect 16F       <- output of cycle 1
+        ...
+        PART 2
+        FS1:\> disconnect 16F       <- output of cycle 2
+        ...
+        PART END
+
+2.4 Values the test does not know in advance (Tcl variables)
+    Handle numbers change between boots (the driver may be 1BD today,
+    1C0 tomorrow). The test finds them DURING the session, in Tcl:
+
+        uefi_driver_handle   send "drivers", regex on the line with
+                             E4999X10.EFI -> Tcl variable h
+        uefi_handles         also "dh -d $h" -> c (controller) and
+                             kids (list of child handles)
+        uefi_tcl 'dh -v $h'  send a command that uses those variables
+        uefi_each_child 'dh -v $k'   once per child, k = child handle
+
+    Note the SINGLE quotes: $h must reach Tcl, not bash.
+
+2.5 Driver debug output is mixed in
+    Our DEBUG build prints messages to the same serial console. They
+    can appear between Shell lines or even inside a line:
+
+        Results: GUID=...&OFFSET=0002&WIDTH=    value: "Connected"
+        ^ driver debug print           ^ output of hii.efi
+
+    So parsers search for patterns (grep -o), they do not assume one
+    item per line.
+
+
+3. Helper apps on the USB drive (misc/tools/)
+--------------------------------------------
+The BIOS Shell is small. Extra .efi apps are copied to the simulated
+USB drive (core/usb-drive/ -> FS1:):
+
+    hii.efi     hii-test-tool (github.com/intel-sandbox/hii-test-tool),
+                Rust. Talks to the HII database and Config Access like
+                the setup screen does.
+                  hii.efi list                    all formsets (ID+title)
+                  hii.efi show <fs> <form> [--lang fr-FR]
+                  hii.efi set <fs> <qid> <value>  RouteConfig
+                Build: tools/hii/build.sh <hii-test-tool dir>
+                build.sh first applies tools/hii/no-exclusive-open.patch:
+                upstream opens the port handle EXCLUSIVE, which
+                disconnects the network stack from that port.
+    pxeboot.efi our small app: PXE or HTTP boot of one port by MAC.
+                Build: tools/pxeboot/build.sh <edk2 dir>
+    tftp.efi, http.efi, shell.efi (ping6, ifconfig6)
+                from edk2 ShellPkg. Build: tools/netcmds/build.sh
+    nictest.efi our app: calls driver protocols the Shell cannot
+                call and prints one "NICTEST ..." line per fact.
+                  nictest.efi <cmd> [driver name part, default CNIC]
+                  cn2     ComponentName2: all languages, bad args
+                  health  DriverHealth: driver, controller, children
+                  aip     AdapterInfo: types, Get each, Set
+                  fmp     FMP: image info, CheckImage with bad images
+                          (never SetImage)
+                  nii     NII 3.1 fields + !PXE struct (checksum)
+                  snp     SNP mode, MAC, stats, mcast IP -> MAC
+                  snpf    SNP: change and restore filters, mcast
+                          list, station address; stats reset
+                  ver     DriverSupportedEfiVersion
+                The app judges nothing; tests/func/nictest.sh does.
+                Build: tools/nictest/build.sh <edk2 dir>
+
+
+4. lib.sh in short
+------------------
+All shared code. A test never copies a helper (rule 2, readme.txt).
+
+  Ports        tap eth uefi_ip host_ip mac mac_hex host_setup
+               host_ping <P> <ip> <count> [ping args]
+  Session      uefi_begin uefi_cmd uefi_end uefi_part
+               uefi_load uefi_unload uefi_ifconfig uefi_ping
+               uefi_driver_handle uefi_handles uefi_tcl uefi_each_child
+  Parsing      uefi_log log_part cmd_out ping_result child_handles
+               driver_line driver_name hii_formset hii_fields hii_value
+  Results      check <label> <detail> <regex>
+               check_eq <label> <got> <want>
+               check_le <label> <number> <max>
+               finish            exit 1 if any FAIL
+
+  Output of a test: one line per check
+
+        PASS port 0 MAC Address (0A:00:00:08:03:18)
+        FAIL port 3 Link Status (got 'Disconnected', want 'Connected')
+
+  run-tests.sh prints "== <test>" before each test and at the end
+  "== failed: <list>" (or "none").
+
+
+5. The functional tests (tests/func/)
+-------------------------------------
+Order in "run-tests.sh func":
+
+    restart  load  protocols  identity  diag  hii  bind  driver-log
+    restart  unload  leak
+
+"restart" = core/restart.sh: fresh Simics boot to the UEFI Shell, no
+driver loaded. Each test says what it needs on line 2 ("Needs: ...").
+
+5.1 load.sh - the driver loads and takes the device
+    Feature   Shell "load" runs the entry point; then Driver Binding
+              Supported()/Start() bind to the PCI function 8086:12A1
+              and create one child per port (theory 3, 4.1).
+    Why       Nothing else works if this fails.
+    How       load E4999X10.EFI; drivers; dh -d <driver>.
+    Pass      - load prints "... - Success"
+              - "drivers" has a line with E4999X10.EFI
+              - exactly 8 children
+              - each port P has exactly one child whose device path
+                ends with MAC(0A0P00080318,0x1)
+    Fail =    entry point error, Supported() said no, Start() failed,
+              or wrong/duplicate MAC per port.
+
+5.2 protocols.sh - every expected protocol is installed
+    Feature   theory 4.1, 5, 6. The driver must install a fixed set:
+                image handle: DriverBinding, ComponentName,
+                  ComponentName2, DriverDiagnostics, DriverDiagnostics2,
+                  DriverHealth, SupportedEfiSpecVersion, LoadedImage,
+                  ImageDevicePath; LoadedImage.Unload not 0
+                each child: NetworkInterfaceIdentifier31,
+                  HIIConfigAccess, AdapterInfo, DevicePath
+                one child only: FirmwareManagement
+    Why       A missing protocol = a missing feature. The network
+              stack needs NII, the setup screen needs HII, FMP must be
+              there once per adapter (not 8 times).
+    How       dh -v <driver>; dh -v <child> for each child. "dh -v"
+              prints one line "Name(address)" per protocol, plus
+              details. Count lines starting with "Name(".
+    Pass      counts as above; AdapterInfo shows "MediaState: ... -
+              Success" and "UNDI IPv6 Supported: 1" on all children.
+    Fail =    protocol not installed, installed twice, or on the
+              wrong handle.
+
+5.3 identity.sh - names and version are consistent
+    Feature   ComponentName(2) names, Driver Binding Version
+              (theory 5.1, 5.2).
+    How the version is coded (NicCorePkg/Dxe/DriverBindingInternal.h,
+    about line 59):
+        Version = MAJOR<<24 | MINOR<<16 | (BUILD/10)<<12 | (BUILD%10)<<8
+        4.9.99  -> 04 09 9 9 00 -> "04099900"
+    The test decodes the hex back:
+        major = hex digits 1-2, minor = 3-4, build = digit5*10 + digit6
+    and compares with the version at the end of the name.
+    How       drivers; dh -d; drivers -l <lang> for en-US fr-FR de-DE
+              es-ES ja-JP zh-Hans.
+    Pass      - name "Intel(R) CNIC Driver X.Y.Z"
+              - hex version decodes to the same X.Y.Z
+              - controller name "Intel(R) Ethernet Connection ..."
+              - every language shows a name with "CNIC"
+    Note      Names are English in all languages: the driver has no
+              translated names. The Shell falls back to English.
+    Fail =    someone bumped Version.h but not the name (or the other
+              way), or a ComponentName call broke.
+
+5.4 diag.sh - Driver Diagnostics
+    Feature   theory 5.3. "drvdiag -s|-e|-m <driver> <controller>".
+              With no child given, the driver runs on the first child
+              (NicCorePkg/Dxe/DriverDiagnostics.c, GetChildInstance).
+    What the driver does today:
+      -s Standard       HalExecStandardDiag() returns Success; it is a
+                        stub with a TODO
+                        (CnicPkg/Library/HalDiagnosticsLib/
+                        HalDiagnosticsLib.c, end of file).
+      -e Extended       LAN loopback test (VIRTCHNL2_OP_LOOPBACK, send
+                        and receive frames). Needs 4 PCDs
+                        PcdDiagLanLoopback* > 0. Defaults in
+                        NicCorePkg.dec (about lines 149-158) are 0 and
+                        CnicPkg does not set them -> returns Unsupported
+                        (ExtendedDiagnostics.c ExecuteExtendedDiagnostics).
+      -m Manufacturing  not implemented -> Unsupported
+                        (RunDiagnostics.c, switch default). Allowed by
+                        the spec.
+    How       the three drvdiag commands, then ifconfig + ping on ports
+              0 and 7 (diagnostics must not break traffic).
+    Pass      -s Success, -e Success, -m Unsupported, ping 2/2.
+    Status    -e FAILS today (Unsupported): it is a real gap (feature
+              compiled in but disabled by PCDs), kept as FAIL on
+              purpose.
+
+5.5 hii.sh - the setup page per port
+    Feature   theory 6.1. Each port has formset "Intel(R) Ethernet
+              Connection E1220-C for QSFP - <MAC>", main form 0x200
+              "Main Configuration Page":
+                Blink LEDs        Numeric 0-15, qid 0x100A, Callback
+                UEFI Driver       text: driver name
+                Adapter PBA       text
+                Device Name       text
+                Chip Type         text
+                PCI Device ID     text, e.g. 12A1
+                PCI Address       text SSSS:BB:DD:FF
+                Link Status       OneOf qid 0x1005, read only
+                MAC Address       text
+                Virtual MAC       String qid 0x1007, read only
+    Why       This is what a user sees in BIOS setup. Wrong values
+              = wrong info to the customer.
+    How       Session 1: "hii.efi list". Formset IDs change every
+              boot, so the test finds each port's ID by the MAC at the
+              end of the title.
+              Session 2:
+                - drivers; dh -v <controller> (PCI facts: segment,
+                  bus, device, function, device ID)
+                - hii.efi show <fs> 0x200 for each port
+                - hii.efi show <fs0> 0x200 --lang fr-FR
+                - hii.efi set <fs0> 0x100A 1   (blink LEDs 1 s)
+                - ifconfig + ping ports 0 and 7
+    Pass      per port:
+                MAC Address   == 0A:0P:00:08:03:18 of that port
+                UEFI Driver   == name in "drivers"
+                PCI Address   == built from dh -v PCIIO (0001:FB:00:00)
+                PCI Device ID == "Device ID" from PCIIO (12A1)
+                Device Name   starts "Intel(R) Ethernet Connection"
+                Link Status   == Connected
+              fr-FR form title "Page de configuration principale";
+              set prints "Set question 0x100A ..."; ping 2/2 after.
+    Why ping  HII access must not touch traffic. Run 1 found that the
+              upstream hii.efi opened the port handle EXCLUSIVE, which
+              made UEFI disconnect SNP/MNP/IP from the port (theory 3:
+              BY_DRIVER users are kicked out by an EXCLUSIVE open).
+              The ping caught it. Fixed in the tool (section 3).
+    Fail =    wrong value on the page, missing translation, RouteConfig
+              error, or HII access breaks traffic.
+
+5.6 bind.sh - disconnect / connect
+    Feature   Driver Binding Stop() and Start() again (theory 3).
+    How       2 cycles: disconnect <ctrl>; dh -d; connect -r; dh -d;
+              ifconfig + ping every port.
+    Pass      disconnect Success, 8 children after connect, ping 2/2
+              on every port in every cycle.
+    Fail =    Stop() leaves state behind (children, HW queues, FW
+              vports) so the second Start() is broken.
+
+5.7 driver-log.sh - no errors in the driver's own log
+    How       grep the whole serial log since boot for:
+                ASSERT | No SEM hash room | No VSI |
+                SEM add/del ... Error/Timeout/Not Found
+    Pass      0 matches. Runs after the other tests, so it checks them
+              all.
+
+5.8 unload.sh - load, use, unload, again
+    Feature   theory 4.2.
+    How       2 cycles: load; ifconfig + ping all ports; unload.
+    Pass      ping 2/2, "Unload - Handle [...] Result Success.", no
+              failed "SEM del".
+    Fail =    Unload cannot remove children / protocols, or the second
+              load fails because the first did not clean up (HW / FW).
+
+5.9 leak.sh - memory is given back
+    Feature   theory 4.3.
+    How       Control: 5 x (ver; ver; memmap), no driver. This shows
+              how much the Shell itself uses per round.
+              Then memmap; 5 x (load; unload; memmap). Read
+              "Available : N Pages" each time.
+                A0 = before any load
+                A1 = after cycle 1, AN = after cycle 5
+    Pass      (A1 - AN) - control <= 16 pages (64 KiB). Cycle 1 may keep some
+              memory for good reasons (firmware caches, HII database
+              pieces); it is printed as INFO, not checked. A REAL leak
+              grows every cycle, so cycles 2..5 must be flat.
+    Fail =    some allocation in Start/Stop/Unload has no Free.
+    Modes     To find WHERE memory is lost, leak.sh has 4 modes:
+                full  load + unload            (default, in suite)
+                nc    load -nc + unload        entry point + Unload
+                                               only, no Start/Stop
+                ncc   load -nc + connect -r    like full, but the
+                      + unload                 connect is done by
+                                               "connect", not "load"
+                bind  disconnect + connect -r  Start + Stop only
+                bindh bind + "drivers" + "dh -d" Shell handle
+                                               commands too
+                stage load -nc, (connect -r,   memmap after every
+                      disconnect) x2, unload   step: which step
+                                               loses pages
+              "load -nc" = load but do not connect to devices.
+              If only "bind" leaks, the leak is in Start/Stop (or in
+              the network stack drivers that Start/Stop wake up).
+    Status    see section 9.
+
+5.10 load2.sh - the same driver loaded twice
+    Feature   theory 3. Supported() of the 2nd image must say no for
+              a controller the 1st image already drives.
+    How       load (2nd image); drivers; dh -d of both; unload -n of
+              the 2nd; ping port 0.
+    Pass      2 driver lines, 2nd image 0 controllers, unload
+              Success, 1st image still 8 children, ping 2/2.
+    Fail =    two drivers on one device (double DMA rings, FW
+              confusion), or unload of the 2nd breaks the 1st.
+
+5.11 child.sh [port] - one child off, the others keep working
+    Feature   DisconnectController with a child handle: Stop() for
+              ONE child (theory 3).
+    How       disconnect $c $h $k (k = child of the port by MAC);
+              dh -d; ping the other ports; connect -r; ping all.
+    Pass      7 children, other ports 2/2; after connect 8 children,
+              the port is back with the same MAC, all 2/2.
+    Fail =    Stop() of one child stops shared queues / the whole
+              device, or the child cannot come back.
+
+5.12 stress.sh [bind|load|reconnect] [cycles] - many cycles
+    How       bind:      disconnect + connect -r per cycle
+              load:      load + unload per cycle
+              reconnect: reconnect -r + map -r + fs1: per cycle
+              each cycle: Success, 8 children, "openinfo $c".
+    Pass      every cycle ok; the number of Drv[ entries in openinfo
+              of the last cycle == first cycle (no lost opens);
+              ping ports 0 and 7 at the end.
+    Fail =    a rare race (1 in N), or a protocol open not closed
+              in Stop (openinfo grows).
+
+5.13 nictest.sh - protocol members (nictest.efi, section 3)
+    How       one session: nictest.efi cn2 health aip fmp nii snp
+              ver snpf; then ifconfig + ping every port.
+    Pass      (all lines of a kind must pass)
+              cn2     every language Success + "CNIC"; xx-XX
+                      Unsupported; NULL args Invalid Parameter;
+                      foreign controller Unsupported
+              health  driver + controllers Healthy (0); foreign
+                      Unsupported
+              aip     >= 1 type, Get each Success, MediaState
+                      Success, unknown type Unsupported, Set media
+                      Unsupported / Write Protected
+              fmp     info Success, empty / junk image not
+                      updatable, bad index / NULL rejected
+              nii     type 1/2, !PXE signature ok and checksum 0,
+                      ifnum unique per port
+              snp     max packet 1500, header 14, current MAC ==
+                      permanent, 224.0.0.1 -> 01005e000001,
+                      ff02::1 -> 333300000001
+              ver     Success, version not 0
+              snpf    state Initialized; each supported filter bit
+                      sets and clears; mcast add count 1, unicast
+                      in mcast list Invalid Parameter, reset count
+                      0; station address set (or Unsupported if not
+                      changeable), reset -> permanent MAC
+              ping    every port 2/2 after snpf (restore worked)
+    Fail =    a protocol member returns a wrong status or a wrong
+              value; snpf leaves a port deaf.
+
+
+6. The network tests (tests/net/) in one line each
+-------------------------------------------------
+Details and history: 12-plan-network.txt.
+    ping            load + ifconfig + UEFI pings host, every port
+    port-isolation  traffic of port P only on tap P (tcpdump)
+    mcast           IPv6 neighbor solicitation (multicast) answered
+    foreign-mac     frames to a wrong MAC are dropped
+    large           1472 / 4000 / 8000 byte pings (IP fragments)
+    parallel        all ports pinged at the same time
+    dhcp            UEFI gets an address from dnsmasq
+    download        1 MB by TFTP and HTTP, files equal
+    ipv6            ifconfig6 + ping6 both ways
+    pxe             PXE boot of pxeboot.efi on every port
+    http-boot       HTTP boot of pxeboot.efi on every port
+    sizes [ports]   ping sizes 0..30000 both ways (fragments)
+    flood [P] [n]   host ping -f n frames, then normal pings
+
+
+7. Writing a new test - worked example
+--------------------------------------
+Goal: check that "dh -v" of the controller shows vendor 8086.
+
+    #!/bin/bash
+    # Usage: vendor.sh   PCI vendor of the controller. Needs: driver loaded.
+    . "$(dirname "$0")/../../lib.sh"
+
+    uefi_begin
+    uefi_handles                      # Tcl: h, c, kids
+    uefi_tcl 'dh -v $c'               # single quotes: $c is Tcl
+    uefi_end
+
+    OUT=$(uefi_log)
+    R=$(grep -a -m1 "Vendor ID" <<< "$OUT" | awk '{ print $NF }')
+    check_eq "vendor" "$R" 8086
+    finish
+
+Steps:
+    1. Put it in tests/func/ (or tests/net/), chmod +x.
+    2. Run it alone: ssh root@<host> $DEV/misc/tests/func/vendor.sh
+    3. Only when it passes alone, add it to FUNC in run-tests.sh.
+    4. Describe it in misc/readme.txt and here (section 5).
+
+
+8. Pitfalls (learned the hard way)
+----------------------------------
+- Every expect wait has a 300 s timeout. A wait regex that never
+  matches costs 300 s and the rest of the session is out of step.
+- Shell output has ANSI color codes; regexes on the live stream
+  (Tcl) must allow \x1b[..m. uefi_log removes them for bash.
+- After a restart, UEFI ping says "No configured interfaces" until
+  ifconfig runs (uefi_ifconfig).
+- Shell column widths change: "Ctrl[16F]         : Name" has many
+  spaces. Use " +" in regexes, not one space.
+- Deploy (setup-uefi-dev.sh) copies but never deletes old files on
+  the host.
+- HII formset IDs change per boot: always look them up by MAC.
+- A test that pings must set the host tap address itself
+  (host_setup). Run 1 of bind.sh "passed" only on ports set up by
+  an earlier test.
+- A tool can break the thing under test: upstream hii.efi opened
+  ports EXCLUSIVE and silently removed the network stack. Always
+  check traffic after using a new tool.
+- Do not deploy while a suite runs: bash reads scripts while they
+  run, a copied-over file can break the running test.
+- New files in core/usb-drive/ reach FS1: only after restart.sh
+  (it packs the folder into a disk image).
+- Simics has a 2nd NIC (BIOS driver). Never take "all NII / SNP
+  handles" as ours; nictest uses the driver's own children.
+
+
+9. Results
+----------
+Details per run: 11-results-driver.txt.
+
+9.1 func suite, 2026-10-30 (run 2, after test fixes)
+    load, protocols, identity, hii, unload, driver-log   PASS
+    bind     PASS (after the host_setup fix, run alone)
+    diag     -s PASS, -m Unsupported (as designed) PASS,
+             -e FAIL: Unsupported. Loopback diag is compiled in but
+             PcdDiagLanLoopback* = 0 (NicCorePkg.dec), CnicPkg does
+             not set them. REAL GAP.
+    leak     FAIL: per cycle 62, 61, 55, 50, 45 pages lost;
+             control (no driver) -4 pages in total. memmap: BS_Data
+             grows ~50 pages per cycle, BS_Code is freed.
+             DMA (PciIoDmaAllocateCommonBuffer) is NOT it: 83 DMA
+             buffers / 8307 pages per cycle are allocated and the
+             loss is only ~50 pages. REAL LEAK.
+    leak modes (2026-10-30, 5 cycles, max 16):
+             nc    PASS  3 pages   (no Start: clean)
+             bind  PASS  4 pages   (Stop + Start again: clean)
+             ncc   FAIL  257 pages (80, 63, 60, 54 per cycle)
+             full  FAIL  ~210 pages
+             So: not the Shell "load" command, not Stop/Start
+             alone, not entry point/Unload alone. Memory is lost
+             only when an image that HAS started is unloaded.
+             Likely: something made once per image on the first
+             Start (global / lazy init) that Stop keeps and Unload
+             does not free. Location in code still open.
+    leak RESULT (allocation tracker in the driver, 2026-10-30):
+             NOT a driver leak. Every gBS allocation of the driver
+             is freed by Unload. The lost pages are pool pages kept
+             by ~100 small blocks of the network stack drivers that
+             bind to our children (HiiDatabase, HttpBoot, Ip4, Ip6,
+             VlanConfig) plus DxeCore internals. leak.sh stays as a
+             trend check. Details:
+             10-plan-driver.txt 11.
+
+9.2 net suite, 2026-10-30 (after the move to lib.sh helpers)
+    ping, port-isolation, mcast, foreign-mac, large, dhcp, download,
+    ipv6, driver-log, pxe, http-boot                      PASS
+    parallel  FAIL: 1-3 of 20 pings lost on ports 0-5 when all 8
+              ports are pinged at once. Known since 2026-10-29, not
+              caused by the refactor. Root cause open.
+
+9.3 Bugs found in the TESTS (fixed) - learn from them
+    identity  regex expected one space in "Ctrl[16F]   : name"
+    diag      expected Success from -m; Unsupported is legal
+    hii       matched driver debug line "RouteConfig [497] Start:"
+              instead of the tool's "Set question ..."
+    hii       tool opened ports EXCLUSIVE (section 3)
+    bind      no host_setup -> ports 1-6 "failed"
+    lib.sh    ping wait did not stop on "No configured interfaces"
+              -> 300 s timeout, whole session out of step

@@ -1,0 +1,48 @@
+Simics - tuning
+===============
+Scope:   launch variables, workarounds, speed (all setups)
+Updated: 2026-11-10
+Related: 01-overview.txt
+
+1. Useful "if not defined" variables
+------------------------------------
+  var                  default  effect
+  -------------------- -------- -----------------------------------
+  pfp                  FALSE    PFD / PFP
+  n_cores              16       Xeon cores (4 = -5 s boot)
+  imc_telnet           FALSE    live IMC console on telnet
+  enable_sim_conn      TRUE     i210 -> lab LAN (Linux guest eth0)
+  enable_cnic_conn     TRUE     16 taps cnic_tap_{0,1}_N
+  load_fxp_packages    FALSE    flash 0x5420 bit 5 = FW loads the
+                                DDP package (uefi-dev sets it)
+  os_type              linux    windows forces PFP
+  Pass with simics -e. Hard-set vars need a sed in launch-simics.sh.
+
+2. Workarounds
+--------------
+- Keep all shared WAs (real-time mode, time quantum, CRC, HLP,
+  NIC mode, MockTime): the model needs them.
+- Real-time mode also caps speed at real time.
+
+3. Faster restart: in-memory snapshot (tested on UEFI, not applied)
+-------------------------------------------------------------------
+- Take when the guest is ready:
+    execute-simics-cmd.sh stop "take-snapshot ready" c
+  Restore: same with "restore-snapshot ready" (~7 s). uefi-dev:
+  then core/usb-replug.sh. ~18 s instead of ~150 s.
+- Blocker: restart.sh starts Simics with stdin /dev/null; after
+  "stop" Simics exits. Fix: sleep infinity | launch-simics.sh.
+- One snapshot = one mode (PFD/PFP); lost when Simics restarts.
+- On-disk checkpoints (write-configuration) are slow (~1 GB,
+  re-connect taps): use snapshots.
+
+4. Speed results (measured with uefi-dev, boot to shell ~150 s)
+---------------------------------------------------------------
+  ~90 s target load + 17 tap bridges, ~60 s simulation to guest.
+  default threading       fastest; multicore ~50% slower
+  n_cores=4               -5 s
+  skip sim_tap + physs1 taps (cnic_tap_1_*)
+                          -19 s (needs sed copy of prepare script;
+                          breaks Linux guest eth0)
+  BIOS knobs (fast boot)  no gain
+  IMC console off         no gain

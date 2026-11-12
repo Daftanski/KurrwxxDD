@@ -1,0 +1,114 @@
+# ------------------------------------------------------------------------------------------------------------- #
+# This is the base main VPC simics script                                                                       #
+# This script set basic variables with values extracted from Berta task (e.g. config vectors)                   #
+# and load next level simics script with contain specified simics functions for VPC (e.g. setup network)        #
+# This script is not a standalone script and it is used in Berta environment                                    #
+# Log level: [info], [workaround], [warning], [dbg], [error] for better parsing log files                       #
+# ------------------------------------------------------------------------------------------------------------- #
+
+try{
+  echo "[info] Start Simics VM setup procedure"
+
+  #---------- Set parameters ------------------------------------------------------------------------
+  # Variables taken from Berta config/passed by appersi script are in []
+  $disk_image = /mnt/image_cache/development_disk_image.craff
+  $bios = /bios/SVLDREL1.86B.0025.D38.2608030854_DAF04B0002_NA_NA_NA_PMR_IBLIMH_X64_Simics_1.bin
+  $i210_mac = "8a:da:a3:fb:30:05"
+  $vm_id = 1
+  $enable_bios_knobs = FALSE
+  $xeon_host_console = summitville.serconsole.con
+  $yml_script = summitville/summitville
+  $pcie_interface = FALSE
+  $connect_to_sn2sfi = TRUE
+  $switch_mode = FALSE
+  $cnic_global_erros_suppress = TRUE
+
+  # OS type derived from the disk image name: "windows" if the name contains "windows",
+  # otherwise "linux". Berta config below may override, so this is set again in
+  # "pre-cnic-shared-workarounds.simics" just in case.
+  $os_type = `'windows' if 'windows' in simenv.disk_image.lower() else 'linux'`
+  echo "[dbg] os_type: " + $os_type + " (from disk_image: " + $disk_image + ")"
+
+  #---------- Set logs capture ----------------------------------------------------------------------
+  try {
+    shell exp= "rm has-log/*_vm"+$vm_id + "*"
+  } except {}
+  log-setup logfile = "has-log/simics_vm" + $vm_id + ".log" -no-console -overwrite -time-stamp
+  start-command-line-capture "has-log/simics_cli_vm" + $vm_id + ".log" -overwrite -timestamp
+
+  #----------- Additional parameters from berta config ----------------
+    add-directory /root/simics_scripts/
+$enable_imc_agent=FALSE
+$enable_acc=FALSE
+$artifactory=FALSE
+$next_script="svl_cnic_prepare_nic.simics"
+$post_wa_script="/root/SimicsWorkspace/development/uefi-dev/core/post-wa-uefi-dev.simics"
+$pre_wa_script="/root/SimicsWorkspace/development/uefi-dev/core/pre-wa-uefi-dev.simics"
+$svl_configuration_script="host_svl_cnic_nic.simics"
+
+
+  $build_path = /root/ci_build/
+  add-directory $build_path
+
+  #---------- Set Pre Workarounds -----------------------------------------------------------------------
+  if not defined pre_wa_script { $pre_wa_script = "pre-cnic-shared-workarounds.simics"}
+  $pre_wa_script = (lookup-file $pre_wa_script)
+  echo "[info] Running pre WA level script: " + $pre_wa_script
+  echo "-------- start of script content ---------------"
+  echo ( shell exp = "cat " + $pre_wa_script )
+  echo "--------- end of script content ----------------"
+  run-command-file $pre_wa_script
+
+  #---------- Handle Build support ------------------------------------------------------------------
+  # "Handle build" is a feature that is used to dynamically pass build directory that is used in berta task
+  
+
+  #---------- Run next level script -----------------------------------------------------------------
+  if not defined next_script { $next_script = "svl_cnic_prepare.simics"}
+  $next_script = (lookup-file $next_script)
+  echo "[info] Running next level script: " + $next_script
+  echo "-------- start of script content ---------------"
+  echo ( shell exp = "cat " + $next_script )
+  echo "--------- end of script content ----------------"
+  run-command-file $next_script
+
+  #---------- Run stop handling script ------------------------------------------------
+  echo "[info] Running stop handling script"
+  try {
+    run-script "vpc_manual/vpc_stop_handlers.py"
+    } except {
+    echo "[warning] vpc_stop_handlers.py script not found, checkpoints are not available."
+  }
+
+  #---------- Disable not needed logs ---------------------------------------------------------------
+  # Disable logging logs from IMC/ACC/Xeon consoles to the Simics CLI console
+  $cnic.hif_top.hifmc.console0.con.disable-cmd-line-output
+  $xeon_host_console.disable-cmd-line-output
+
+  #---------- Set Post Workarounds -----------------------------------------------------------------------
+  if not defined post_wa_script { $post_wa_script = "post-cnic-shared-workarounds.simics"}
+  $post_wa_script = (lookup-file $post_wa_script)
+  echo "[info] Running post WA level script: " + $post_wa_script
+  echo "-------- start of script content ---------------"
+  echo ( shell exp = "cat " + $post_wa_script )
+  echo "--------- end of script content ----------------"
+  run-command-file $post_wa_script
+  
+  #---------- Set IMC flash bit 5 before boot ------------------------------------------------------------------
+  if ($load_fxp_packages) {
+    # Enable UEFI basic traffic.
+    $current_val = ($cnic.imc.flash.read 0x5420)
+    $cnic.imc.flash.write 0x5420 ($current_val | (1 << 5))
+    echo "[info] IMC flash 0x5420: " + ($cnic.imc.flash.read 0x5420)
+  }
+
+  #---------- Start Simics VM -----------------------------------------------------------------------
+  echo "[info] Start Simics VM"
+  run
+} except {
+  echo "[error] error-command: " + ( get-error-command )
+  echo "[error] error-file: "    + ( get-error-file )
+  echo "[error] error-line: "    + ( get-error-line )
+  echo "[error] error-message: " + ( get-error-message )
+  exit
+}

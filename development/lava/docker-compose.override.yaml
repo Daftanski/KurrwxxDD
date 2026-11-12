@@ -1,0 +1,41 @@
+# SVL: LAVA server + one SSH-only worker (Simics over SSH, later real HW).
+# No KVM on this host, no USB/serial/NFS/TFTP needed yet.
+services:
+  lava-server:
+    volumes:
+    - ./svl/settings.d/03-svl-autoregister.yaml:/etc/lava-server/settings.d/03-svl-autoregister.yaml:ro
+
+  lava-dispatcher:
+    image: lava-svl-dispatcher:latest
+    build: !override
+      context: ./svl/dispatcher
+      args:
+        image: ${DC_DISPATCHER_IMAGE}
+        http_proxy: ${http_proxy}
+        https_proxy: ${https_proxy}
+    depends_on: !reset []
+    devices: !reset []
+    cap_add: !reset []
+    security_opt: !reset []
+    environment:
+      no_proxy: ${DC_NO_PROXY}
+      NO_PROXY: ${DC_NO_PROXY}
+    volumes: !override
+    - ./overlays/etc/lava-dispatcher/lava-worker:/etc/lava-dispatcher/lava-worker:ro
+    - ./svl/ssh:/root/.ssh
+    - worker-state:/var/lib/lava/dispatcher/worker/
+    - worker-tmp:/var/lib/lava/dispatcher/tmp
+    restart: unless-stopped
+
+  lava-dispatcher-webserver:
+    profiles: [full]
+  lava-dispatcher-tftpd:
+    profiles: [full]
+  lava-dispatcher-ser2net:
+    profiles: [full]
+  lava-dispatcher-nfs:
+    profiles: [full]
+
+volumes:
+  worker-tmp:
+    name: lava-server-worker-tmp

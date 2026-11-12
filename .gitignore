@@ -1,0 +1,17 @@
+config.txt
+.notes/
+.logs/
+
+# Secrets (live in ~/lava, never in the repo)
+.env
+token.env
+ssh/
+
+# Created at run time
+development/*/logs/
+development/kernel-dev/image/
+development/uefi-dev/core/usb-drive.img
+
+# Built by misc/tools/*/build.sh
+development/uefi-dev/core/usb-drive/*
+!development/uefi-dev/core/usb-drive/test.txt

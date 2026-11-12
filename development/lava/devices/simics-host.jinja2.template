@@ -1,0 +1,19 @@
+{# Simics host: Linux, runs Simics + UEFI + test scripts (misc/run-tests.sh). #}
+{# The ssh_host placeholder is filled in by add-device.sh from config.txt. #}
+{% extends 'ssh.jinja2' %}
+{% set ssh_host = '@HOST_IP@' %}
+{% set ssh_user = 'root' %}
+{% set ssh_identity_file = '/root/.ssh/id_ed25519' %}
+{# Simics host is rebuilt often: its host key changes. #}
+{% set ssh_options = (
+"          - '-o'
+          - 'PasswordAuthentication=no'
+          - '-o'
+          - 'StrictHostKeyChecking=no'
+          - '-o'
+          - 'UserKnownHostsFile=/dev/null'
+          - '-o'
+          - 'LogLevel=FATAL'
+"
+) %}
+{% block schroot %}{% endblock schroot %}

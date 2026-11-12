@@ -1,0 +1,638 @@
+Full driver verification plan (levels 0..9)
+===========================================
+Scope:   CNIC UEFI driver E4999X10.EFI (nic-core CnicPkg + NicCorePkg),
+         on Simics (development/uefi-dev). Black box from the UEFI
+         Shell + small test apps; white box via unit tests.
+Updated: 2026-11-06
+Related: 11-results-driver.txt (func tests status, leak 3.6)
+         12-plan-network.txt
+         02-test-guide.txt
+         ../misc/readme.txt
+
+
+1. How to read this plan
+------------------------
+Levels go from simple to complex. Do not start a level before the
+level below it is green (or its fails are known and written down).
+
+    ID      L<level>.<n>
+    What    the behavior to check
+    How     tool / steps
+    Pass    exact pass rule
+    State   HAVE  = test exists (name)
+            NEW   = can be written now with the Shell + lib.sh
+            TOOL  = needs a new UEFI app (section 12)
+            SIM   = needs Simics control (fault injection, link)
+            OS    = needs an OS boot after UEFI
+            WRIT  = test written, not run yet (name)
+    Class A/B/C (any driver / any NIC driver / CNIC only):
+    13-plan-generic.txt 2.
+
+Facts about the driver used below (approximate lines):
+    - Image handle: DriverBinding, ComponentName2, DriverDiagnostics2,
+      DriverHealth, DriverSupportedEfiVersion, Unload.
+      (NicCorePkg/Dxe/DriverEntryPoint.c)
+    - Children (8 = PcdMaxChildrenNumber): DevicePath (MAC node),
+      NII 3.1 (UNDI), AdapterInfo, HIIConfigAccess, FMP (on 1 child
+      in the tests). (NicCorePkg/Dxe/DriverBindingStart.c ~286-458)
+    - Rings: RX/TX 512 x 2048 bytes. No jumbo. Ctlq 16 x 4096.
+    - ExitBootServices event: HalExitBootServices, bus master off.
+      (DriverEntryPoint.c ~60)
+    - Diag LAN loopback PCDs are 0 in the Cnic build (11-results-driver.txt 9.1).
+
+
+2. Level 0 - build and unit tests (no Simics)
+---------------------------------------------
+L0.1  What  DEBUG and RELEASE build with no warnings (-Werror).
+      How   build_cnic.sh with TARGET=DEBUG and TARGET=RELEASE.
+      Pass  both build, EFI made.                         State NEW
+L0.2  What  Google Test unit tests of NicCorePkg + CnicPkg.
+      How   host build of the *Test.inf (HOST_APPLICATION) and run.
+      Pass  all tests pass; list of suites saved in logs/.  State NEW
+L0.3  What  Driver size and sections.
+      How   ls -l, objdump -h of the .dll.
+      Pass  size change vs last release < 10 %, no RWX. State NEW
+
+
+3. Level 1 - presence (driver loads, everything is there)
+--------------------------------------------------------
+L1.1  load        load Success, 8 children, MACs.      HAVE load
+L1.2  protocols   dh -v image / children.               HAVE protocols
+L1.3  identity    version, names, languages.            HAVE identity
+L1.4  driver-log  no errors in the log.                 HAVE driver-log
+L1.5  What  "load" twice: 2nd image must not bind the same
+            controller again (Supported says ALREADY_STARTED).
+      How   load; load; drivers; dh -d.
+      Pass  still 8 children, 2nd image has no controller; unload
+            of the 2nd image Success.                     State NEW
+L1.6  What  load -nc + "connect <ctrl>" binds only that controller.
+      How   load -nc; connect $c; dh -d $h.
+      Pass  8 children, same MACs as L1.1.               State NEW
+
+
+4. Level 2 - protocol members one by one
+----------------------------------------
+L2.1  ComponentName2: GetDriverName / GetControllerName for
+      each language in SupportedLanguages; bad language ->
+      EFI_UNSUPPORTED; ChildHandle = each child.        State TOOL
+L2.2  DriverDiagnostics2: Standard / Extended / Manufacturing;
+      bad language and bad type -> right error, no hang.
+      Shell: drvdiag -s/-e/-m (HAVE diag). Bad args: TOOL.
+L2.3  DriverHealth: GetHealthStatus for controller and each
+      child -> Healthy; no messages; FormHiiHandle NULL.
+      Shell has no command.                              State TOOL
+L2.4  AdapterInfo: GetSupportedTypes = MediaState, NetworkBoot?,
+      UndiIpv6; GetInformation each; SetInformation -> UNSUPPORTED
+      or WRITE_PROTECTED; unknown GUID -> UNSUPPORTED.   State TOOL
+L2.5  FMP: GetImageInfo (size query first, then data), version
+      and name strings; GetPackageInfo; CheckImage with a 0-byte,
+      random and wrong-signature image -> not accepted; GetImage.
+      SetImage only with a bad image (must fail, nothing written).
+                                                        State TOOL
+L2.6  NII 3.1: Revision, IfNum unique per child, Type = UNDI,
+      Id points to a valid !PXE struct (checksum ok, entry point
+      in image, IFcnt = number of children - 1 rules).  State TOOL
+L2.7  HII: hii.efi show of main form per port.           HAVE hii
+L2.8  HII: read EVERY form and question, per port; types and
+      ranges; read-only flags.                           State NEW
+L2.9  HII: set each editable question to each option, then
+      read back; reboot (restart.sh) and read again (persistence
+      where the form says so).                           State NEW
+L2.10 DriverSupportedEfiVersion: value = PcdDriverSupportedEfiVersion,
+      not 0 (PCD default is 0: CHECK the Cnic dsc).      State TOOL
+
+
+5. Level 3 - lifecycle and binding state machine
+------------------------------------------------
+L3.1  bind        disconnect / connect -r, ping.          HAVE bind
+L3.2  unload      load / ping / unload x2.                HAVE unload
+L3.3  What  Disconnect ONE child only (disconnect $c $h $k).
+      Pass  other 7 ports still ping; then connect -r gives the
+            child back with the same MAC; it pings.     State NEW
+L3.4  What  Connect with remaining device path = one MAC node
+            (only one child made).
+      How   disconnect $c; connect $c $h <child device path>?
+            Shell "connect" has no RemainingDevicePath arg.
+                                                        State TOOL
+L3.5  What  Unload while the network stack is in use
+            (ifconfig static, ping running on another port).
+      Pass  unload Success or clean error; no hang; after load
+            again all ports ping.                        State NEW
+L3.6  What  Unload while a child protocol is opened BY_DRIVER by
+            a foreign app (e.g. hii.efi without the patch, or
+            test app opening NII EXCLUSIVE).
+      Pass  unload fails cleanly or forces disconnect; no crash.
+                                                        State TOOL
+L3.7  What  Repeat bind 50 x.
+      Pass  every cycle Success, ping at the end, leak.sh bind
+            limit (<= 2 pages per cycle, see 9.1 of test guide).
+                                                        State NEW
+L3.8  What  Repeat load/unload 50 x.
+      Pass  every Success; free pages trend flat after cycle 10
+            (see leak, 11.).                            State NEW
+L3.9  What  reconnect -r (all drivers in system) 5 x.
+      Pass  8 children each time, ping.                  State NEW
+L3.10 What  ExitBootServices: queues off, bus master off, no DMA
+            after exit.
+      How   app that calls ExitBootServices and halts; or boot
+            Linux (L8). Check FW log / Simics PCI command reg.
+                                                        State SIM
+
+
+6. Level 4 - data path
+----------------------
+L4.1  ping, port-isolation, mcast, foreign-mac, large, parallel,
+      dhcp, download, ipv6, pxe, http-boot.        HAVE net suite
+L4.2  What  Frame size sweep: ping payload 0, 1, 18, 46, 1472,
+            1473 (fragment), 8972 both ways.
+      Pass  all replies, no driver errors.               State NEW
+L4.3  What  RX ring overflow: host "ping -f" / flood UDP to one
+            port for 30 s while UEFI is idle; then normal ping.
+      Pass  no hang, ping works after; driver log no errors
+            beyond "RX dropped".                         State NEW
+L4.4  What  Long transfer: 50 MB TFTP + HTTP, md5 equal.
+      Pass  file equal, time noted.                      State NEW
+L4.5  What  All 8 ports download at the same time (one per
+            port, sequential in UEFI is ok, host parallel).
+                                                        State NEW
+L4.6  What  Receive filters via SNP app: unicast only, +bcast,
+            +mcast list (16 entries, then 1 more than max),
+            promiscuous, all-multicast.
+      Pass  host-sent frames received exactly per filter.
+                                                        State TOOL
+L4.7  What  StationAddress: set a new MAC, traffic uses it, the
+            old MAC is dropped; Reset -> factory MAC back.
+                                                        State TOOL
+L4.8  What  Statistics: counters grow by the sent / received
+            number; reset clears them.                   State TOOL
+L4.9  What  VLAN: VlanConfigDxe (HII form) adds VLAN 10 on port 0;
+            host side vlan 10 on the tap; ping over VLAN.
+                                                        State NEW
+L4.10 What  Link down/up: host "ip link set <tap> down/up" or
+            Simics link control. AIP MediaState and SNP GetStatus
+            follow; traffic back after up.               State SIM
+L4.11 What  Soak: 1 h ping on all ports (1/s) + download every
+            5 min.
+      Pass  loss < 0.1 %, no errors, free pages flat.     State NEW
+
+
+7. Level 5 - fault and error paths
+----------------------------------
+L5.1  What  FW (IMC/CP) does not answer the mailbox at Start.
+      Pass  Start fails with a clean error OR CriticalHealthError
+            set; DriverHealth says Failed with a message;
+            controller HII string package present; no hang
+            longer than the ctlq timeout; unload works.  State SIM
+L5.2  What  FW answers with error for one virtchnl op (e.g.
+            ENABLE_QUEUES on port 3).
+      Pass  only that child fails / has health error; others
+            ping.                                         State SIM
+L5.3  What  FW dies during traffic.
+      Pass  TX/RX return errors, no hang, health turns Failed.
+                                                        State SIM
+L5.4  What  Out of memory at Start: app eats free memory, then
+            connect.
+      Pass  Start fails clean, nothing half-installed (dh), memory
+            back after the app frees.                     State TOOL
+L5.5  What  FMP SetImage with corrupt / oversize / wrong-signature
+            images.
+      Pass  error code, flash unchanged (GetImageInfo version
+            same), driver still works.                    State TOOL
+L5.6  What  HII RouteConfig with bad strings: wrong GUID, bad hex,
+            OFFSET beyond the varstore, very long string.
+      Pass  error code, no crash, values unchanged.       State TOOL
+L5.7  What  UNDI CDB with bad args: wrong OpCode, CPBsize, NULL
+            DB, call before Start/Initialize, double Start.
+      Pass  StatCode error, no crash.                     State TOOL
+
+
+8. Level 6 - boot flows and OS handoff
+--------------------------------------
+L6.1  PXE boot each port.                          HAVE pxe
+L6.2  HTTP boot each port.                         HAVE http-boot
+L6.3  What  Boot Linux after UEFI used the ports (ping on all).
+      Pass  Linux idpf driver probes, all vports up, no FW
+            errors about stale queues / vports.           State NEW func/linux-boot.sh
+            FAIL with stack = REAL FINDING D16 (see ../../../.notes/STATUS.txt).
+L6.4  What  Warm reset (reset -w in the Shell) 10 x with the
+            driver loaded and ports active.
+      Pass  every boot fine, driver loads again.          State NEW
+
+
+9. Level 7 - stress and long run
+--------------------------------
+L7.1  load/unload 200 x, bind 200 x (L3.7/L3.8 longer).
+L7.2  8 ports x (ping + download) for 8 h.
+L7.3  Repeat the whole func + net suite 10 x in a row.
+      Pass  no new fails, free pages flat.               State NEW
+
+
+10. Level 8/9 - conformance and security
+---------------------------------------
+L8.1  UEFI SCT: DriverBinding, ComponentName2, DriverDiagnostics2,
+      DriverHealth, NII/SNP (via SNP over our UNDI), HIIConfigAccess,
+      AdapterInfo, FMP, DevicePath.
+      Pass  0 fails (or each fail explained).             State TOOL
+      Details: 10.1 below.
+L9.1  Review: all external inputs checked (FW messages sizes /
+      counts, HII strings, FMP images, CDB fields). Static review
+      + the bad-input tests of L5.5-L5.7.                 State NEW
+
+10.1 UEFI SCT plan (L8.1)
+  Tool: IHV SCT from edk2-test (uefi-sct/SctPkg). IHV SCT is the
+  suite for add-in card drivers (tests only the driver's own
+  protocols). Build IA32/X64 SctPackage, copy to USB drive, run
+  from the Shell. Not built yet.
+
+  Setup (all State TOOL until SCT is built):
+  L8.1.0 What  Build IHV SCT (X64), put SctPackage on usb-drive
+               (USB_MB 256 is enough), run "InstallSct" + "SCT -u"
+               or a saved sequence (.seq) from the Shell.
+         How   new misc/tools/sct/build.sh; new func/sct.sh
+               <seq>: load driver, run SCT, copy Report/*.csv
+               back (mcopy from the USB image after restart).
+         Pass  SCT starts, report written.
+  L8.1.1 Run with driver loaded and connected (load), PFD and PFP.
+         Every test below on both modes.
+
+  Tests (one SCT sequence each, report saved to logs/):
+  L8.1.2  DriverBinding: Supported/Start/Stop conformance and
+          function (bad handles, NULL, RemainingDevicePath, Stop
+          with children). Watch F4 (child restart).
+  L8.1.3  ComponentName2 / ComponentName: all languages, bad
+          language, ChildHandle cases. Known: D9 (English only
+          driver name) is not a fail.
+  L8.1.4  DriverDiagnostics2 / DriverDiagnostics: types, bad
+          language. Known: D7 (-e has no real loopback).
+  L8.1.5  DriverHealth: GetHealthStatus, Repair if present.
+  L8.1.6  DriverSupportedEfiVersion: version value.
+  L8.1.7  NII 3.1 (NetworkInterfaceIdentifier): fields, !PXE
+          struct.
+  L8.1.8  SNP over our UNDI (SnpDxe): Start/Stop/Initialize/
+          Reset/Shutdown, ReceiveFilters, StationAddress,
+          Statistics, MCastIpToMac, Transmit/Receive, GetStatus.
+          Needs a link partner for some tests (tap side up).
+          Known: D12-D15 may show here; map each fail to an ID.
+  L8.1.9  AdapterInformation: GetSupportedTypes, GetInformation,
+          SetInformation.
+  L8.1.10 HIIConfigAccess: ExtractConfig / RouteConfig / Callback.
+          Known: D11 (Virtual MAC RouteConfig).
+  L8.1.11 FirmwareManagement: GetImageInfo, GetImage, CheckImage,
+          SetImage conformance only (no real flash write: skip
+          SetImage function tests or run on a throw-away NVM).
+  L8.1.12 DevicePath (children): node format, MAC node, Utilities
+          / ToText.
+  L8.1.13 Unload / LoadedImage of the driver image.
+
+  Pass: 0 fails per sequence, or each fail is in ../../../.notes/STATUS.txt
+        with an ID. Warnings listed in the test log.
+  Risks: SCT run time on Simics (hours; run on one host, use
+        run-repeat style async); SNP tests change filters / MAC
+        (restart the guest after, see D13); FMP SetImage must not
+        write the NVM.
+
+
+11. Memory leak follow-up (11-results-driver.txt 3.6)
+----------------------------------------
+Facts (2026-10-30, tracker in ../misc/tools/leaktrack/, log ../../../.logs/2026-10-30_
+leaktrack_stage2.log):
+    - All gBS allocations made by the driver itself are freed by
+      Unload (0 live CnicDxe allocations after unload).
+    - Per Start/Stop, other drivers keep ~100 small pool blocks
+      (~7 KB): HiiDatabase 40 x 20 B, HttpBootDxe 16, Ip4Dxe 8,
+      Ip6Dxe 16, VlanConfigDxe 8 x 304 B. These are made during
+      "connect -r" by the network stack on our children.
+    - Live peak ~20000 allocations during Start. BS_Data loss per
+      cycle (136 pages) is >> live bytes (~6 pages): pool pages are
+      pinned by the few kept blocks (fragmentation). Not visible
+      to the gBS hook: DxeCore internal pool (handles, protocol
+      entries, events).
+Open:
+    L11.1 Same tracker numbers with a 2nd NIC driver (e.g. e1000
+          model, if Simics has one) -> if same residue, not ours.
+    L11.2 openinfo / dh count of the controller per cycle (is a
+          DxeCore entry kept?).                           State NEW
+    L11.3 Symbols of the platform firmware to map HiiDatabase+199FC
+          etc. to source lines.
+
+
+12. Tools to write
+------------------
+    nictest.efi (one app, subcommands; build like tools/pxeboot):
+      cn2      L2.1   ComponentName2 all languages, bad args
+      health   L2.3   DriverHealth per controller / child
+      aip      L2.4   AdapterInfo types, Get/Set
+      fmp      L2.5   FMP info, CheckImage bad images, SetImage bad
+      nii      L2.6   NII + !PXE struct checks
+      snp      L4.6-L4.8        mode, MAC, stats, mcast IP->MAC
+      snpf     L4.6-L4.8        API level: each filter bit on/off,
+                                mcast list add/reset, bad (unicast)
+                                mcast, station address set/reset,
+                                stats reset; then ping all ports.
+                                Not yet: host frames per filter.
+      ver      L2.10
+      (not yet) bad CDB L5.7, FMP SetImage L5.5
+      eatmem   L5.4   allocate N MB, wait key, free
+      ebs      L3.10  ExitBootServices then dead loop
+    Built: tools/nictest/build.sh -> core/usb-drive/nictest.efi.
+    Test:  tests/func/nictest.sh.
+    Simics: script to stop/break the IMC/CP mailbox (L5.x) and to
+    drop link (L4.10). Check execute-simics-cmd.sh.
+
+
+13. Order of work
+-----------------
+    1. NEW Shell-only tests: L1.5, L1.6, L3.3, L3.5, L3.7, L3.9,
+       L4.2, L4.3, L2.8, L11.2.
+    2. nictest.efi: aip, health, fmp, cn2, nii.
+    3. snp subcommands, eatmem, ebs.
+    4. Simics fault injection (L5.1-L5.3, L4.10).
+    5. Linux handoff, long runs, SCT.
+
+
+14. Status
+----------
+    [x] Level 0 run 2026-11-04 (worktree with CnicPkg.dsc diag PCDs)
+        L0.1 PASS  full DEBUG + RELEASE build, -Werror on (EDK2
+             GCC5), only "lto-wrapper: serial compilation" notes.
+             Note: build without BUILD_INCREMENTAL wipes Build/,
+             so DEBUG and RELEASE outputs do not live together.
+        L0.2 PASS  Scripts/build_test.sh + Cnic variant, then
+             execute_test*.sh: NicCorePkg 25 bins, CnicPkg 5 bins,
+             0 failed, 1012 gtest cases.
+             Log: ../../../.logs/2026-11-04_level0_unittests.log
+             Note: build_test.sh rewrites NicCorePkg/Include/
+             Version.h (placeholder 4.9.99); not tracked by git.
+        L0.3 PASS  RELEASE CnicDxe.efi 613504 B vs last release
+             613376 B (+128 B = diag PCDs). Sections: .text RX
+             62 KB, .data RW 538 KB, .reloc. No RWX.
+             PE DllCharacteristics = 0 (no NX_COMPAT flag).
+             FINDING (driver): 512 KB of the 538 KB .data is
+             .bss.mUndiInterfaceContexts = 65535 pointers
+             (UndiLib.c:44, MAX_PXE_IFNUM = MAX_UINT16 in
+             UndiLib.h:34). GenFw stores .bss as zeros in the
+             PE, so 85 % of the EFI file and of its loaded image
+             is this table. Fix idea: small MAX (e.g. 256) or
+             allocate per child. Not fixed (ask user).
+             Tracked: ../../../.notes/STATUS.txt D1.
+    [x] Level 1 run 2026-11-04 (release EFI on Simics)
+        L1.1-L1.4 PASS  load protocols identity driver-log (PFD).
+        L1.5 PASS  load2 (PFD; PFP LAVA job 7 earlier).
+        L1.6 PASS  NEW func/connect1.sh: disconnect all ctrls,
+             "connect $c $h" (first ctrl, our driver only) ->
+             1 ctrl, NPORT/NCTRL children; connect -r -> all
+             ctrls, all children, ping every port. In FUNC
+             after load2. PFD: 1 ctrl, 8 children.
+        PFP: LAVA job 12 (restart load protocols identity
+             driver-log load2 connect1).
+             connect1 FAILED on PFP: test connected the LAST ctrl
+             ($c left by uefi_each_ctrl) -> CP FW Rx bug, see
+             ../../../.notes/STATUS.txt B5.
+             Test fixed: [lindex $ctrls 0]. 2026-11-04 Simics:
+             PFP restart load connect1 PASS; PFD restart load
+             protocols identity driver-log load2 connect1 PASS.
+        Level 1 DONE.
+    [x] Level 2 run 2026-11-04 (release EFI on Simics)
+        PFP restart load nictest diag hii: all PASS except
+             drvdiag -e Unsupported = old release EFI without
+             fix F1 (../../../.notes/STATUS.txt F1). Not a new bug.
+        L2.8/L2.9 NEW func/hiiall.sh (in FUNC after hii):
+             per port: forms (5), detail of each form, get of
+             every QID (0x100A 0x1005 0x1007 0x0004 0x0005),
+             bad QID get/set, Blink out of range, ping.
+             PASS PFP (8 ports) and PFD.
+             Only editable question: Blink LEDs (callback, not
+             stored) -> no persistence to check after reboot.
+             FINDING: set VMAC 0x1007 (GrayOut) returns Success
+             but is dropped (no setter). ../../../.notes/STATUS.txt D11.
+        Level 2 DONE.
+    [x] Run 2026-11-05 (2 hosts: host 1 PFP, host 2 PFD; see
+        ../../doc/simics/05-maintenance.txt 3.)
+        Net suite PFP: all PASS except parallel (known B2).
+        Func suite PFP: all PASS except diag -e (F1) and leak
+             (known, not in driver).
+        Func suite PFD: found REAL BUG F4 (../../../.notes/STATUS.txt):
+             L3.3 child / load2 / connect1 / stress failed, a single
+             child could not be started again after disconnect.
+             Fixed (DriverBindingStop.c), PFD child load2 connect1
+             stress PASS. stress.sh open-info count now ignores all
+             SnpDxe GetProt entries (B3, not ours).
+        L3.5  NEW func/unload-busy.sh: unload under host ping,
+             reload, all ports ping. PASS PFP and PFD (host ping
+             loses 40-48 % while unloaded: expected).
+        L6.4  NEW func/warm-reset.sh [cycles]: reset -w, load, ping.
+             PFD 3 cycles PASS. 10 cycles not run.
+        L4.11 NEW net/soak.sh [s]: host pings all ports 1/s + UEFI
+             ping port 0. PFD 180 s: 1-2 lost per port (B2); max
+             lost = s/1000 + 2.
+        L4.2/L4.3 sizes, flood: PASS PFP. X1.x NEW net/frames.sh
+             (misc/tools/frames/frames.py raw frames): echo sizes
+             0/1/17/18/46/1000, bad IP checksum dropped, oversize
+             (tap MTU 9000: no answer, port ok), burst 600 (~400
+             answered), 20000 broadcast storm: port needs some
+             seconds to recover, then OK. PASS PFP and PFD.
+        L5.7  nictest.efi cdb: UNDI getstate ok, 7 bad CDBs return
+             StatCode != 0, no crash. PASS PFP and PFD.
+        L4.9  NEW net/vlan.sh + nictest.efi vlan (EFI_VLAN_CONFIG):
+             add VLAN 10 on child 0, connect -r, ping both ways
+             over a host vlan device, remove, connect -r, untagged
+             ping. PASS PFD (host 3). PFP: first run failed only
+             because the test lacked "connect -r" (EDK2 VlanConfigDxe
+             drops the stack of the NIC on Set/Remove; not a driver
+             bug); rerun on PFP not done. The VLAN interface keeps
+             the name of the untagged one (eth1). hii.efi set on the
+             VLAN form does nothing (value stays 0), vconfig does
+             not exist in this Shell: use nictest vlan.
+        L3.7/L3.8/L3.9 PFD: stress bind 50, reconnect 5 and load 50
+             PASS (host 2; ~1 h for load 50). Open-info count flat.
+        L6.4  warm-reset 10 cycles PASS PFD (host 3).
+        L4.11 soak 600 s PFD (host 3, fresh): all ports <= 2 lost
+             except port 5 (4 lost, known B2); UEFI->host port 0: 0
+             lost. PASS with B2 caveat (max lost = s/1000 + 2).
+        L4.10 NEW net/linkflap.sh (tap down/up x3): no traffic while
+             down, both directions work after up. PASS PFD. The
+             media state UEFI shows while down: see INFO (D4: driver
+             always reports link up). Only a host tap flap, no Simics
+             link control.
+        L4.4/L4.5 net/download.sh now has SIZE=bytes: 4 MB = 36 s on
+             one port. L4.5 8 ports x 1 MB TFTP+HTTP, files equal:
+             PASS PFD (host 3, 66 s). L4.4 50 MB: first run failed
+             "Volume Full" (USB image was 32 MB; now 256 MB, USB_MB in
+             make-usb-drive.sh, all hosts). L4.4 50 MB TFTP + HTTP
+             on port 0: PASS PFP (host 1, files equal, 344 s).
+        L5.4  NEW nictest.efi eatmem + func/memfail.sh: eats all
+             memory (also below 4 GB) except N pages, disconnect /
+             connect, ifconfig + ping, free, reconnect. PFD, 600
+             pages left (886 free): driver Start still gives 8
+             children, but ifconfig/ping fail cleanly ("No configured
+             interfaces"); no hang, after free everything works.
+             PASS (driver allocates rings later or small).
+        L3.10 NEW func/ebs.sh (nictest.efi ebs = ExitBootServices +
+             dead loop): app starts, Simics alive, no IMC assert.
+             PASS PFP and PFD. Weak: PCI bus master bit not read (Simics PCI
+             config object of the CNIC not found yet). Guest is dead
+             after it: run restart.
+        L5.5/L5.6 nictest.efi: FMP SetImage junk / NULL / empty fail,
+             HII RouteConfig / ExtractConfig bad strings (7 cases)
+             all return an error, no crash. PASS PFP and PFD.
+    [x] L1.1-L1.4, L2.2 (shell part), L2.7, L3.1, L3.2, L4.1, L6.1,
+        L6.2 exist (11-results-driver.txt 4.)
+    [x] L11 tracker: driver frees all its own allocations (11.)
+    [x] func/nictest.sh run 2026-10-30: all PASS except 2 REAL
+        gaps (11-results-driver.txt 3.8, 3.9): SNP mcast list not kept,
+        StationAddress Reset fails.
+    [~] WRIT 2026-10-30, not run yet:
+          L1.5            func/load2.sh
+          L3.3            func/child.sh
+          L3.7 L3.8 L3.9  func/stress.sh bind|load|reconnect
+                          (also L11.2: openinfo count per cycle)
+          L4.2            net/sizes.sh
+          L4.3            net/flood.sh
+          L2.1 L2.3 L2.4 L2.5 (no SetImage) L2.6 L2.10,
+          L4.6-L4.8 (API level)   func/nictest.sh + nictest.efi
+                                  (RUN, see above)
+    [x] Run 2026-11-06 (tests developed, host 1 PFP, 2/3 PFD)
+        L5.1/L5.3 NEW func/fw-dead.sh: IMC cores stopped in Simics
+             (cnic.imc.core[N].disable / enable): data path keeps
+             working (host ping 5/5), connect returns in 7 s with 0
+             children (clean failure), after enable: bind cycle, 8
+             children, all ports ping. PASS PFD. PFP not valid: ran
+             after the old snpstate had left port 0 dead.
+        X4.1  NEW func/fw-balance.sh: per bind cycle the IMC log shows
+             the same virtchnl ops (cycle 2 = 3), ENABLE = DISABLE,
+             CREATE_VPORT = DESTROY_VPORT (16 each, PFD). PASS.
+        L3.4  NEW func/connect-rdp.sh + nictest connectrdp: connect
+             with remaining device path of one MAC: only that child,
+             2nd adds one, same one again = Not Found, connect -r
+             completes, all ports ping. PASS PFD, ports in ascending
+             order. Order 3,5 then rest: Rx dead on ports 0-5 = CP FW
+             bug B5 again (also PFD).
+        L3.6  NEW func/hold.sh + nictest hold: foreign app holds NII
+             EXCLUSIVE, DisconnectController returns Not Found (the
+             driver keeps running, clean failure), close, reconnect,
+             all ports ping. PASS PFD.
+        X2.x  NEW func/snpstate.sh + nictest snpstate: SNP state
+             machine. Children start Initialized (not Stopped).
+             Results PFD: wrong-state calls fail as expected, double
+             Start = Already started, Stop when Initialized = Device
+             Error, Shutdown when Started = Device Error, Stopped:
+             Not started for all calls except Reset. FINDINGS:
+             - SNP Reset returns Invalid Parameter in EVERY state
+               (also Initialized); UNDI Reset CDB itself: see cdb
+               reset in nictest.sh.
+             - Initialize on an Initialized child = Device Error.
+             - After the state poking all 8 ports stay dead (also
+               after driver disconnect + connect -r). snpdamage.sh
+               (PFD, host 3): Reset alone = no damage; Shutdown +
+               Initialize = all ports dead; setting
+               ReceiveFilters(unicast|broadcast) again revives them;
+               Shutdown/Stop/Start/Initialize and double Initialize
+               also kill the ports. ../../../.notes/STATUS.txt D12-D14.
+               snpdamage.sh FAILs on purpose until D13 is understood.
+               Restart the guest after it.
+        L5.7+ nictest cdb: UNDI reset CDB added.
+        X1.4  NEW func/txfill.sh + nictest txfill: 509 frames fill the
+             Tx ring, Transmit refuses with Device Error, GetStatus
+             never frees a buffer, port 0 dead until restart. FAIL
+             PFP and PFD = REAL FINDING D15 (../../../.notes/STATUS.txt). Also
+             nictest samemac (X3.1): StationAddress of child 1 = MAC
+             of child 0 returns Device Error (not allowed), reset
+             restores the MAC. Restart after txfill.
+        L7.3  NEW misc/run-repeat.sh <suite> [n]: repeats a suite and
+             counts failed runs (not run: ~1 h per "all").
+        L6.3  NEW func/linux-boot.sh [plain|used|nostack|unloaded]
+             (BOOTFS= disk, fs0 host 3, fs2 host 2). Host 3 PFD:
+             plain = exit_boot() failed, Linux does not start;
+             nostack (load -nc) PASS; unloaded PASS; no driver
+             PASS. REAL FINDING D16: children / stack above the
+             driver. Host 1 PFP not valid (fs0 = grub menu). Not in
+             any suite until D16 is fixed. Restart guest after it.
+        L5.2  BLOCKED: needs FW error injection, Simics has none.
+    [ ] OPEN after 2026-11-06 (what is left of the plan):
+        - D16: find who changes the memory map at ExitBootServices
+          (DEBUG build, log allocs/frees), then idpf probe check
+        - misc/readme.txt: list fw-dead, fw-balance, connect-rdp,
+          hold, snpstate, snpdamage, txfill, linux-boot, run-repeat,
+          vlan, linkflap and new nictest subcommands
+        - L8.1 SCT, X5, X6, L7 long runs (run-repeat.sh)
+        - one full func + net run on all hosts with all fixes
+        - (older list below, partly done)
+        - add new tests to run-tests.sh (frames, vlan, linkflap,
+          unload-busy, memfail, ebs last + restart, warm-reset,
+          soak); none is in a suite yet
+        - run new tests on both PFP and PFD (vlan PFP, linkflap
+          PFP, soak PFP, warm-reset PFP not run)
+        - L7 long runs (soak hours, suites x10), L6.3 Linux boot (OS),
+          L8.1 SCT, L2.9 persistence, L5.1-L5.3 FW fault injection
+          (Simics script for the IMC mailbox not written), L3.4,
+          L3.6, X2 SNP state machine, X3, X4, X5, X6
+        - L3.10: read PCI bus master bit in Simics (object not found)
+        - run the full func + net suite once with the F4 fix on both
+          modes (not done, only the changed tests were run)
+        - host 3 is set up (PFD); host 1 PFP, host 2 PFD
+    [ ] NEXT STEPS (in this order):
+        1. Run alone: load2, child, stress bind 20, stress load 20,
+           stress reconnect 3, sizes, flood. Fix test bugs.
+        2. Add passing tests to run-tests.sh (nictest -> FUNC,
+           sizes/flood -> NET). Run the full suite once.
+        3. Decide with the team on the 2 gaps of nictest (11-results-driver.txt
+           3.8, 3.9); fix in UndiLib.c or mark as known.
+        4. eatmem / ebs subcommands (L5.4, L3.10).
+        5. HII all questions + persistence (L2.8, L2.9), VLAN L4.9.
+        6. Simics fault injection (L5.1-L5.3, L4.10).
+        7. Generic suite: 13-plan-generic.txt 5.
+    [ ] parallel ping loss and diag -e: still open (11-results-driver.txt 4.)
+    [ ] generic suite for other drivers: 13-plan-generic.txt
+
+
+15. More tests (added 2026-11-04, all State NEW unless noted)
+-------------------------------------------------------------
+15.1 Data path
+  X1.1  Short frames (< 60 B) and padding, both ways.
+  X1.2  Host frame > MTU: dropped, no hang.
+  X1.3  Burst of 255+ frames between two polls (Rx ring wrap).
+  X1.4  Tx ring full: Transmit without GetStatus, then
+        recovery.                                      State TOOL
+  X1.5  Bad IP checksum from host: dropped, driver ok.
+  X1.6  Broadcast storm on one port while others ping.
+  X1.7  Jumbo: max MTU reported by the driver, send at that size.
+
+15.2 SNP / UNDI state machine                         State TOOL
+  X2.1  Start/Stop/Initialize/Shutdown/Reset in every order, x2.
+  X2.2  Transmit / Receive before Initialize, after Shutdown.
+  X2.3  GetStatus with no Tx pending; with interrupts asked.
+  X2.4  Receive with buffer < frame: BUFFER_TOO_SMALL, frame kept.
+  X2.5  Transmit with header fill (HeaderSize > 0, src/dst/proto).
+  X2.6  NII entry called directly with IFnum of every child.
+
+15.3 Multi-port / isolation
+  X3.1  Same MAC on 2 ports (StationAddress).          State TOOL
+  X3.2  One port Shutdown while others run traffic.    State TOOL
+  X3.3  Unload while ping runs on another port.
+  X3.4  PFD vs PFP: same results for the same tests.
+
+15.4 Firmware / control queue                         State SIM
+  X4.1  Count mailbox messages per Start/Stop; no extra, no
+        leftover queues in FW after Stop.
+  X4.2  Slow FW: delayed replies hit ctlq timeouts cleanly.
+  X4.3  After Stop, Linux idpf probe sees no stale vports
+        (fast form of L6.3).                           State OS
+
+15.5 Boot and config
+  X5.1  Fast boot / no Shell: driver from option ROM path.
+  X5.2  Secure Boot on: signed loads, unsigned rejected.
+  X5.3  PCD/HII config (PXE off, IPv6 off) seen in AIP and boot
+        options.
+  X5.4  Boot options: one PXE/HTTP entry per port, no duplicates
+        after reconnect.
+
+15.6 Robustness
+  X6.1  DEBUG build run: no ASSERT, no error lines (driver-log).
+  X6.2  Memory map filled near 4 GB: DMA mappings below the
+        device limit (if any).                         State TOOL
+  X6.3  Whole suite with another NIC driver loaded too.
+  X6.4  PlatformLang change: ComponentName2 and HII strings follow.
+
+15.7 Process
+  X7.1  Unit tests (L0.2) in CI on every commit.
+  X7.2  Line coverage of UT + Simics tests; add tests where low.

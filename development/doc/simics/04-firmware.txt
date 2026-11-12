@@ -1,0 +1,45 @@
+Simics - firmware images
+========================
+Scope:   CNIC images in Simics: what they are, how to change them
+Updated: 2026-11-10
+Related: 01-overview.txt, 05-maintenance.txt,
+         ../../../.notes/00-theory/04-chip-and-firmware-basics.txt
+
+1. Images
+---------
+  image       goes into                    picked by (under $build_path)
+  ----------- ---------------------------- -------------------------------
+  BL1         IMC memory (first boot)      first rglob bl1-simics-*.bin
+  NVM         IMC SPI flash (RAM copy)     first rglob <board>/nvm*.bin
+  HIFMC ROM   hifmc irom                   first rglob hifmc_rom_debug.bin
+  fuses       preset                       FIXED /root/ci_build (not
+                                           $build_path)
+- NVM is copied to RAM at load: FW writes are lost at restart.
+- Never put two builds under one dir: rglob takes the first match.
+
+2. NVM content
+--------------
+  ATF (bl2, bl31, bl32), u-boot, zephyr (IMC OS + CP FW),
+  HIFMC runtime FW, PCIe FW, DDP package, board config (10001 PFD,
+  10002 PFP), security params, version trailer.
+  "Change only FW" = make a new NVM file. No separate FW file.
+
+3. New NVM
+----------
+  A. Full FW build: firmware.ethernet.imc-fw-row
+     scripts/imcv2_build_all.sh -s -r -row ... (needs nvm-generator
+     sub-repos + FW docker).
+  B. CI NVM + own modules: tools/scripts/NVM/
+     cnic_nvm_build_base_over_ci.sh (MULTI_INJECT, same sub-repos;
+     URL is for BTS, adapt for ROW).
+  C. Ready NVM file from CI / FW team.
+  Patching one module by hand: not possible (headers, CRC, signing).
+
+4. Swap
+-------
+- Change the file, restart Simics. No runtime swap (no IMC cold
+  reset command).
+- Idea (not done): own image dir with links (bl1, 10001/, 10002/,
+  hifmc) and $build_path pointing there via launch-simics.sh sed.
+  10001/ and 10002/ must be real dirs (rglob skips linked dirs).
+- BL1, NVM, HIFMC ROM must come from compatible builds.

@@ -1,0 +1,45 @@
+LAVA - maintenance
+==================
+Scope:   keep the LAVA server running, update it, set it up again
+Updated: 2026-11-10
+Related: 01-overview.txt
+
+1. Daily (in ~/lava)
+--------------------
+  docker compose ps                                     status
+  docker compose logs --tail 50 lava-server             server log
+  docker compose logs --tail 50 lava-dispatcher         worker log
+  docker compose exec lava-server lava-server manage workers list
+  docker compose up -d                                  start
+  docker compose stop                                   stop, keeps data
+- Containers restart on boot (restart policy). Data lives in Docker
+  volumes lava-server-*.
+- NEVER: make clean, docker compose down -v (delete all jobs and
+  devices).
+
+2. Update LAVA
+--------------
+  git pull
+  docker compose pull --ignore-buildable
+  docker compose build lava-dispatcher
+  docker compose up -d
+
+3. Set up from zero (no sudo needed, user in group docker)
+----------------------------------------------------------
+  1. git clone https://gitlab.com/lava/pkg/docker-compose.git ~/lava
+  2. Add our files (01-overview.txt 2.): override, svl/dispatcher,
+     svl/settings.d.
+  3. Worker key: ssh-keygen -q -t ed25519 -N "" -C lava-worker0 \
+       -f svl/ssh/id_ed25519   (dir mode 700)
+  4. .env: admin user, random password, proxies, DC_NO_PROXY;
+     chmod 600.
+  5. docker compose pull --ignore-buildable
+     docker compose build lava-dispatcher
+     docker compose up -d
+  6. Check: web UI answers, worker0 Online / Active.
+  7. API token (web UI > user > API tokens) to svl/token.env as
+     LAVA_TOKEN=...
+  8. Add devices (02-usage.txt 3.), cron (02-usage.txt 2.).
+- Worker says "Auto registration is disabled": settings.d file is
+  not mounted (new LAVA default is off).
+- Workstation: no /dev/kvm (no QEMU devices), no sudo, never reboot.

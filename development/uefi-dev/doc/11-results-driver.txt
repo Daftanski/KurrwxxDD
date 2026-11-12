@@ -1,0 +1,153 @@
+Driver functional tests - plan and status
+=========================================
+Scope:   Simics tests in development/uefi-dev/misc/tests/func/ and the
+         shared test infrastructure (misc/lib.sh, misc/run-tests.sh)
+Updated: 2026-10-30
+Related: ./ (theory + test guide)
+         12-plan-network.txt
+         development/uefi-dev/misc/readme.txt (sections "Tests", "Rules")
+
+
+1. Layout
+---------
+    misc/lib.sh            all shared code: ports, UEFI Shell session,
+                           log parsing (uefi_part/log_part, cmd_out,
+                           ping_result, hii_*), checks (check, check_eq,
+                           check_le)
+    misc/run-tests.sh      suites: net, func, all (default)
+    misc/tests/net/        network tests (12-plan-network.txt)
+    misc/tests/func/       functional tests (this file)
+    misc/tools/<tool>/     UEFI apps + build.sh -> core/usb-drive/
+
+Rules: misc/readme.txt section "Rules".
+
+
+2. Tests (func suite order)
+---------------------------
+    restart
+    load        load Success, in "drivers", 8 children with own MAC
+    protocols   image: DriverBinding, ComponentName(2),
+                DriverDiagnostics(2), DriverHealth,
+                SupportedEfiSpecVersion, LoadedImage + Unload.
+                children: NII31, HIIConfigAccess, AdapterInfo
+                (MediaState Success, UNDI IPv6 1), DevicePath;
+                FirmwareManagement on 1 child
+    identity    version hex 04099900 == "4.9.99" in the name;
+                controller name; name for 6 languages
+    diag        drvdiag -s / -e / -m Success, then ping
+    hii         hii.efi show 0x200 per port: MAC, driver name, PCI
+                address / device ID vs PCIIO, Link Status; fr-FR
+                title; set Blink LEDs; then ping
+    bind        disconnect / connect -r, ping
+    driver-log  no driver errors in the log
+    restart
+    unload      load / ping / unload x2
+    leak        load/unload x5, memmap free pages (max 16 lost)
+
+
+3. Facts found while writing the tests (probe 2026-10-30)
+---------------------------------------------------------
+3.1 hii.efi (hii-test-tool) formset IDs change with the boot; find them
+    by MAC at the end of the title. Main form is 0x200 (no form 0x1).
+3.2 Driver debug prints (ExtractConfig ...) mix into hii.efi output,
+    sometimes inside a line. Parse with grep -o (lib.sh hii_fields).
+3.3 SOLVED (run 1, 2026-10-30): every "hii.efi" call on a port logged
+    VIRTCHNL2_OP_DISABLE_QUEUES and after it ifconfig said "Invalid
+    interface name". Cause is the TOOL, not the driver: hii-test-tool
+    opens DevicePath / HiiConfigAccess on the port handle with
+    open_protocol_exclusive (src/commands/show.rs:53, get.rs:60,
+    set.rs:79, hii/protocol.rs:445). EXCLUSIVE makes UEFI disconnect
+    every driver on the handle (SNP, MNP, IP...) -> SNP Shutdown ->
+    queues off, network stack gone. Fix: GET_PROTOCOL open
+    (misc/tools/hii/no-exclusive-open.patch, applied by build.sh).
+    Worth reporting upstream.
+    Seen in Berta too (2026-11-03, svl-release-ci-1819, upstream tool
+    without the patch): first "show <port formset>" prints
+    "snp->undi.shutdown()/stop() 8000h:6h" (SnpDxe Stop; UNDI not
+    started -> NOT_STARTED, harmless). After it: SnpDxe 9 -> 8 devices,
+    port VLAN/IP4/IP6/HTTP formsets gone, formset IDs shift by 4, test
+    uses old IDs -> all test_hii FAIL. CNIC driver (1CD) stays loaded,
+    child handle stays. One more port lost per HII test.
+    Fix: upstream the patch to hii-test-tool (local tree has it,
+    uncommitted). Tests should also re-list or match by MAC.
+3.4 drivers -l fr-FR / de-DE / zh-Hans show the English name. Names are
+    not translated (HII strings are, e.g. fr-FR form title).
+3.5 No Driver Configuration protocol (drvcfg does not list the driver).
+3.6 LEAK (real, run 2): free pages lost per load/unload cycle:
+    62, 61, 55, 50, 45. Control (same Shell commands, no driver): -4
+    pages over 4 rounds. memmap: BS_Data grows ~50 pages per cycle
+    (40,329 -> 40,540 over cycles 1..5), BS_Code is freed. So about
+    200 KiB of boot-services data (pool/pages) is not freed by
+    Stop/Unload.
+    Localized with leak.sh modes (doc/02-test-guide.txt 9.1):
+      nc (load -nc/unload) PASS 3, bind (disconnect/connect -r)
+      PASS 4, ncc (load -nc/connect -r/unload) FAIL 257,
+      full FAIL. => lost only when a started image is unloaded.
+    DriverUnloadImage (NicCorePkg/Dxe/DriverEntryPoint.c ~166):
+    DisconnectController per controller, UndiRemovePxeStruct,
+    CloseEvent, uninstall protocols. It frees no global state.
+    Suspect: per-image state made on first Start (lazy init) and
+    kept over Stop. Code location open.
+    RESULT (allocation tracker, 2026-10-30): NOT a driver leak. 0
+    driver allocations live after unload. The loss is pool pages
+    pinned by small blocks the network stack keeps (HiiDatabase,
+    HttpBoot, Ip4, Ip6, VlanConfig) + DxeCore internals.
+    Details: 10-plan-driver.txt 11. Tracker: ../misc/tools/leaktrack/. Log:
+    ../../../.logs/2026-10-30_leaktrack_stage2.log.
+3.7 bind ports 1-6 no reply: TEST bug. bind.sh did not set the host
+    tap addresses (only diag/hii did, for ports 0 and 7). Fixed
+    (host_setup per port); "restart load bind" PASS.
+3.8 REAL GAP (nictest snpf): SNP ReceiveFilters with a multicast list
+    returns Success but Mode->MCastFilterCount stays 0. UndiLib.c
+    UndiReceiveFilters (~533) keeps no list, READ returns no list
+    (its own TODO list). Same topic as
+    ../../../.notes/STATUS.txt D2.
+    FIX 2026-11-02 (uncommitted): list kept in Ctx (max 8), cleared on
+    RESET_MCAST_LIST, copied to DB. UT PASS. HW still not programmed.
+    Simics check pending.
+3.9 REAL GAP (nictest snpf): SNP StationAddress(Reset=TRUE) returns
+    Device Error. UndiStationAddress (UndiLib.c ~658) answers RESET
+    with UNSUPPORTED. Since WRITE is not supported, RESET could just
+    succeed (MAC is already the permanent one). Write -> Device
+    Error with changeable=0 is ok. Statistics: UNSUPPORTED (legal).
+    FIX 2026-11-02 (uncommitted): RESET falls to READ path. UT PASS.
+    Simics check pending.
+3.10 nictest first took ALL NII handles: Simics has a 2nd NIC (BIOS
+    driver, PciRoot(0)/Pci(7,0)). Fixed: children = handles our
+    driver opened PciIo BY_CHILD_CONTROLLER for (generic).
+3.11 core/usb-drive/ is packed into a disk image by restart.sh.
+    New .efi files are seen only after a restart.
+3.12 PFP mode (2026-11-02): "PFP=TRUE core/restart.sh" (board
+    10002, writes logs/pfp). PFP MACs are 0A:00:00:0P:03:1P;
+    lib.sh mac() reads logs/pfp. Unload crashed (ASSERT
+    MemoryAllocationLib.c(821), PciIoDmaFreeCommonBuffer Size==0):
+    idpf_common.c globals (send_dma_mem, send_msg_results,
+    ctlq_msg) shared by all controllers, freed again by the 2nd
+    idpf_deinit_hw. Fixed: NULL them after free (SharedNssip
+    submodule). Leak of the 1st controller's globals remains,
+    report to shared-code owners. After fix, PFP: all net PASS
+    (parallel loss known), unload PASS, leak same as PFD (3.6).
+
+
+4. Status
+---------
+[x] lib.sh helpers, tests moved to net/ and func/, readme rules
+[x] run 1 "run-tests.sh func": failed identity diag hii bind leak
+    identity, diag -m: test bugs (fixed). diag -e: real (PCDs 0).
+    hii: tool bug 3.3 (fixed). bind: 3.7. leak: 3.6.
+[x] run 2 with the fixes: failed diag (-e, real) bind (test bug,
+    fixed, PASS alone) leak (real, 3.6). All others PASS.
+[x] run "run-tests.sh net" to check the refactor: all PASS except
+    parallel (known packet loss, 12-plan-network.txt 7.)
+[x] leak 3.6 solved: not in the driver.
+[x] full suite 2026-10-30 (clean driver): failed parallel diag leak,
+    all known (parallel loss, diag -e PCDs, leak 3.6).
+[x] nictest.sh: PASS except 3.8, 3.9 (real gaps).
+[~] written, not run: load2 child stress sizes flood
+    (10-plan-driver.txt 14. NEXT STEPS)
+
+
+5. Next tests
+-------------
+All next tests, by level: 10-plan-driver.txt. Other drivers:
+13-plan-generic.txt.

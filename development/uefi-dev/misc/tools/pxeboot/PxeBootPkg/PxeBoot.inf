@@ -1,0 +1,25 @@
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = PxeBoot
+  FILE_GUID      = 6F3C2B8E-4D1A-4E7B-9C55-2A8D1E0B7F31
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = PxeBootMain
+
+[Sources]
+  PxeBoot.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DevicePathLib
+  MemoryAllocationLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  gEfiLoadFileProtocolGuid
+  gEfiShellParametersProtocolGuid

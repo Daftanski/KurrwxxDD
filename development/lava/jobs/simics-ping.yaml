@@ -1,0 +1,49 @@
+# Usage: lavacli jobs submit svl/jobs/simics-ping.yaml   (or web UI: Scheduler > Submit)
+# Override steps: change STEPS below. PFP mode: set PFP to TRUE.
+device_type: ssh
+job_name: simics uefi - restart + ping
+priority: medium
+visibility: public
+tags: []
+
+timeouts:
+  job:
+    minutes: 300
+  action:
+    minutes: 280
+  connection:
+    minutes: 2
+
+actions:
+- deploy:
+    to: ssh
+    os: fedora
+    timeout:
+      minutes: 2
+
+- boot:
+    method: ssh
+    connection: ssh
+    prompts:
+    - 'root@'
+    timeout:
+      minutes: 2
+
+- test:
+    timeout:
+      minutes: 280
+    definitions:
+    - from: inline
+      name: simics-uefi
+      path: inline/simics-uefi.yaml
+      parameters:
+        STEPS: "restart ping"
+        PFP: "FALSE"
+      repository:
+        metadata:
+          format: Lava-Test Test Definition 1.0
+          name: simics-uefi
+          description: run-tests.sh steps on the Simics host
+        run:
+          steps:
+          - PATH=/root/.local/bin:$PATH PFP=$PFP /root/SimicsWorkspace/development/uefi-dev/misc/lava-run.sh $STEPS
