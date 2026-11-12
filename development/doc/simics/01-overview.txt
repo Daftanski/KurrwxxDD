@@ -1,0 +1,70 @@
+Simics - overview
+=================
+Scope:   what a Simics host is and how a run starts; shared by all
+         teams (firmware, Linux, UEFI)
+Updated: 2026-11-10
+Related: 02-linux.txt, 03-uefi.txt, 04-firmware.txt
+IPs:     ../../../config.txt only
+
+1. What a host is
+-----------------
+- A VPC container image built by Jenkins
+  (/root/SimicsWorkspace/vpc-config_nic.yaml): Simics + platform +
+  CI build + BIOS + Linux disk image, all copied in at build time.
+- Changing assets does NOT need a new container (05-maintenance.txt).
+  Only a new Simics version does.
+- Hosts get reimaged: hand-made changes are lost.
+- One Simics per host (shared TAP devices). Starting one kills the
+  running one.
+
+2. Ports and logs on the host
+-----------------------------
+  33441   guest console: UEFI shell or Linux serial (telnet)
+  33341   Simics CLI (telnet; misc/helpers/execute-simics-cmd.sh)
+  VNC :1  graphics
+  has-log/imc_serial_console_vm1.log   IMC (CP FW) console, always
+                                       on, ~1 MB/min
+  has-log/simics_vm1.log               Simics model log
+- HW (FXP) model log, short runs only (huge):
+    execute-simics-cmd.sh "cnic.fxp_top.log-level -r 4" ...
+    back with -r 1.
+- Shared hosts: someone else may restart Simics.
+
+3. Launch chain
+---------------
+Same in uefi-dev and kernel-dev (development/<x>/core/):
+  restart.sh          entry point. Kills old Simics, prepares
+                      (uefi-dev: builds USB image), runs
+                      launch-simics.sh in the background, waits
+                      (uefi-dev: for "Shell>").
+  launch-simics.sh    makes our copy of
+                      startup_scripts/vpc_launch.simics (few lines
+                      changed, original never edited), runs simics.
+  Inside Simics:
+    our launch copy -> pre-wa script
+    -> /root/simics_scripts/svl_cnic_prepare_nic.simics
+       ("if not defined" defaults, 06-tuning.txt 1.)
+    -> host_*.simics (picks images, load-target)
+    -> post-wa script -> run
+- `simics -e '$x = ..'` sets only "if not defined" variables. Hard
+  set lines in the launch copy need a sed in launch-simics.sh.
+- Images load only at load-target: any image change = restart.
+
+4. PFD / PFP
+------------
+- $pfp FALSE = PFD (board 10001), TRUE = PFP (board 10002).
+- Board picks the NVM: first rglob('<board>/nvm*.bin') under
+  $build_path. PFP needs a 10002 NVM, else StopIteration and
+  Simics does not start.
+- Some launch scripts set $pfp hard: launch-simics.sh deletes that line.
+- Check: grep "spi_flash_image_file :" in the start log.
+
+5. Dev setups (development/, one per guest)
+-------------------------------------------
+  guest    setup        deploy to host            notes
+  -------- ------------ ------------------------- ------------------
+  Linux    kernel-dev   update-simics-kernel.sh   02-linux.txt
+  UEFI     uefi-dev     setup-uefi-dev.sh         03-uefi.txt
+  Same host, one at a time: starting one kills the other.
+  New setup: own development/<name>/core/{restart.sh,
+  launch-simics.sh}, own notes file here.

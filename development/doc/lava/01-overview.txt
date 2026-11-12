@@ -1,0 +1,53 @@
+LAVA - overview
+===============
+Scope:   LAVA test scheduler on the workstation; runs automated tests
+         on Simics hosts (any setup), later real HW
+Updated: 2026-11-12
+Related: 02-usage.txt, 03-maintenance.txt,
+         ../../../.notes/00-theory/06-test-scheduler-lava.txt (what LAVA is),
+         ../simics/01-overview.txt
+IPs:     ../../../config.txt only
+
+1. What runs where
+------------------
+  workstation (Docker, ~/lava)          Simics host
+  +-------------------------------+     +---------------------------+
+  | lava-server  (web UI, API, DB)|     | development/<setup>/misc/ |
+  | lava-dispatcher = worker0     | ssh |   lava-run.sh <steps>     |
+  |   (job runs here)  -----------+---->|   -> run-tests.sh         |
+  +-------------------------------+     +---------------------------+
+- One device per Simics host, type "ssh". The job logs in as root,
+  runs one command, each PASS/FAIL line becomes a LAVA test case.
+- One job at a time per device; more jobs wait in the queue.
+- Web UI: http://<workstation-ip>/, user admin, password in
+  ~/lava/.env (DC_LAVA_ADMIN_PASSWORD). API token: ~/lava/svl/token.env.
+
+2. Files (~/lava)
+-----------------
+Our config is versioned in development/lava/ and linked into ~/lava
+(svl/<x> and docker-compose.override.yaml are symlinks). Secrets stay
+only in ~/lava.
+
+  ~/lava (upstream)      git clone of gitlab.com/lava/pkg/docker-compose
+  ~/lava/.env            admin user/password, proxies (secret, mode 600)
+  ~/lava/svl/ssh/        worker ssh key (secret)
+  ~/lava/svl/token.env   API token (secret)
+  development/lava/:
+    docker-compose.override.yaml  own worker image, ssh only, no
+                                  KVM/USB/serial; tftp/nfs/ser2net off
+    dispatcher/          worker image = upstream + ssh, telnet, expect
+    settings.d/          WORKER_AUTO_REGISTER: true
+    devices/             device template; add-device.sh <n> fills in
+                         the IP from config.txt (02-usage.txt 3.)
+    jobs/*.yaml          job templates
+    submit.sh, results.sh   02-usage.txt
+  New LAVA server: clone upstream, then link the files above.
+
+3. Test runner on the host
+--------------------------
+- uefi-dev: misc/lava-run.sh = run-tests.sh + one LAVA test case per
+  step (<nn>-<step>) and per check (<nn>-<step>.<check>). Deployed
+  with setup-uefi-dev.sh.
+- kernel-dev: no runner yet. A new setup needs its own
+  misc/lava-run.sh with the same output rule (PASS/FAIL lines,
+  "== <step>", "== failed: <list>").

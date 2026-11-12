@@ -1,0 +1,72 @@
+diff --git a/boot/uefi/nic-core/CnicPkg/CnicDxe/CnicDxe.inf b/boot/uefi/nic-core/CnicPkg/CnicDxe/CnicDxe.inf
+index f96fc72960..ea007ebf15 100644
+--- a/boot/uefi/nic-core/CnicPkg/CnicDxe/CnicDxe.inf
++++ b/boot/uefi/nic-core/CnicPkg/CnicDxe/CnicDxe.inf
+@@ -44,6 +44,7 @@
+ 
+ [Sources]
+   ../../NicCorePkg/Dxe/DriverEntryPoint.c
++  ../../NicCorePkg/Dxe/LeakTrack.c
+ 
+   ../../NicCorePkg/Dxe/DriverBinding.c
+   ../../NicCorePkg/Dxe/DriverBindingSupported.c
+@@ -132,6 +133,7 @@
+ [Protocols]
+   gEfiDriverBindingProtocolGuid  ## PRODUCES
+   gEfiDevicePathProtocolGuid     ## PRODUCES AND CONSUMES
++  gEfiLoadedImageProtocolGuid    ## CONSUMES
+ 
+ [FixedPcd]
+   gNicCorePkgTokenSpaceGuid.PcdRxRingLength
+diff --git a/boot/uefi/nic-core/NicCorePkg/Dxe/DriverBindingStop.c b/boot/uefi/nic-core/NicCorePkg/Dxe/DriverBindingStop.c
+index 974dc1bf8b..1b2184cc0a 100644
+--- a/boot/uefi/nic-core/NicCorePkg/Dxe/DriverBindingStop.c
++++ b/boot/uefi/nic-core/NicCorePkg/Dxe/DriverBindingStop.c
+@@ -25,6 +25,7 @@
+ ******************************************************************************/
+ 
+ #include "DriverBindingInternal.h"
++#include "LeakTrack.h"
+ 
+ #ifdef INTERNAL_UNIT_TEST
+ #undef STATIC
+@@ -261,6 +262,8 @@ ControllerStop (
+   Status = ControllerDestroyDatabaseEntry (Controller);
+   IF_RETURN (EFI_ERROR (Status), Status);
+ 
++  LeakTrackDump ("stop");
++
+   return EFI_SUCCESS;
+ }
+ 
+diff --git a/boot/uefi/nic-core/NicCorePkg/Dxe/DriverEntryPoint.c b/boot/uefi/nic-core/NicCorePkg/Dxe/DriverEntryPoint.c
+index 0be7552003..cff94e9660 100644
+--- a/boot/uefi/nic-core/NicCorePkg/Dxe/DriverEntryPoint.c
++++ b/boot/uefi/nic-core/NicCorePkg/Dxe/DriverEntryPoint.c
+@@ -44,6 +44,8 @@
+ 
+ #include <Library/Hal/HalBaseLib.h>
+ 
++#include "LeakTrack.h"
++
+ STATIC EFI_EVENT  mEventNotifyExitBootServices;
+ 
+ /**
+@@ -97,6 +99,8 @@ DriverEntryPoint (
+   EFI_STATUS  Status;
+   EFI_STATUS  CleanupStatus;
+ 
++  LeakTrackStart (ImageHandle);
++
+   Status = DriverBindingInstallProtocol (ImageHandle);
+   IF_RETURN (EFI_ERROR (Status), Status);
+ 
+@@ -200,5 +204,8 @@ DriverUnloadImage (
+   Status = DriverBindingUninstallProtocol (ImageHandle);
+   IF_RETURN (EFI_ERROR (Status), Status);
+ 
++  LeakTrackDump ("unload");
++  LeakTrackEnd ();
++
+   return Status;
+ }

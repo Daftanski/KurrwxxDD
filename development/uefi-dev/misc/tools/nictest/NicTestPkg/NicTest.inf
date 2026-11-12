@@ -1,0 +1,41 @@
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = NicTest
+  FILE_GUID      = 3D6B1F0A-8E52-4C7D-A1B9-5F2E7C90D413
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = NicTestMain
+
+[Sources]
+  NicTest.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DevicePathLib
+  MemoryAllocationLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Protocols]
+  gEfiAdapterInformationProtocolGuid
+  gEfiComponentName2ProtocolGuid
+  gEfiDevicePathProtocolGuid
+  gEfiDriverHealthProtocolGuid
+  gEfiDriverSupportedEfiVersionProtocolGuid
+  gEfiFirmwareManagementProtocolGuid
+  gEfiHiiConfigAccessProtocolGuid
+  gEfiNetworkInterfaceIdentifierProtocolGuid_31
+  gEfiPciIoProtocolGuid
+  gEfiShellParametersProtocolGuid
+  gEfiSimpleNetworkProtocolGuid
+  gEfiVlanConfigProtocolGuid
+
+[Guids]
+  gEfiAdapterInfoMediaStateGuid
+  gEfiAdapterInfoUndiIpv6SupportGuid

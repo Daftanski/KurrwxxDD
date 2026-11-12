@@ -1,0 +1,41 @@
+Simics - maintenance (assets, new host)
+=======================================
+Scope:   change CI build, BIOS, disk image; set up a new host
+Updated: 2026-11-10
+Related: 01-overview.txt, 04-firmware.txt
+
+1. Assets and how to change them
+--------------------------------
+  asset        how                                         then
+  ------------ ------------------------------------------- --------
+  CI build     replace_asset.sh (2.), point $build_path    restart
+  BIOS         file to /root/SimicsWorkspace/BIOS/, $bios  restart
+  BIOS knobs   uefi-dev core/uefi-dev.preset.yml           restart
+  PFD/PFP      PFP=TRUE core/restart.sh                    restart
+  disk image   $disk_image (kernel-dev does it)            restart
+  EFI file     uefi-dev core/usb-drive/ + usb-replug.sh    replug
+  kernel       update-simics-kernel.sh                     restart
+  Simics ver.  new container image                         -
+
+2. New CI build
+---------------
+- Tool: /root/SimicsWorkspace/replace_asset.sh -C vpc-config_nic.yaml
+  -U <artifactory .../nssip-trunk-ci-<N>/deploy>
+  Fills new_ci_build/ and new_simics_scripts/. Asks the AD password.
+  No typing: Artifactory Identity Token in /root/.af_token (chmod
+  600), PASSWORD=$(cat /root/.af_token) ./replace_asset.sh ...
+- launch-simics.sh still uses /root/ci_build: add a sed of
+  $build_path (CI_BUILD var), restart. Rollback: plain restart.
+- Manual: extract nvmupdate_package_external-*.tar.gz into an
+  EMPTY dir and use it as $build_path.
+- relaunch-simics.sh (vendor) skips our setups: do not use.
+- Not tried yet.
+
+3. New host
+-----------
+  1. ssh key (user types the password once).
+  2. Add host-ip-<n> + role to ../../../config.txt (copy
+     ../../../config.example first time), then
+     ../../lava/add-device.sh <n>  (LAVA device, ../lava/02-usage.txt 3.).
+  3. Deploy the setup(s) you need (01-overview.txt 5.) and check
+     its prerequisites (03-uefi.txt 4.).
