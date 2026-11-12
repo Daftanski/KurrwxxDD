@@ -7,7 +7,7 @@ MODULES_DIR=$KERNEL_DIR/target_modules
 ARCHIVE=$KERNEL_DIR/kernel_output.tar.gz
 
 SCRIPT_SRC_FILE=$KERNEL_DIR/simics_dev.sh
-SIMICS_HOST=root@10.91.173.120
+SIMICS_HOST=root@${1:?usage: $(basename "$0") <simics_host>}
 SIMICS_DIR=/root/SimicsWorkspace/development
 SIMICS_SCRIPT=$SIMICS_DIR/simics_dev.sh
 
@@ -21,7 +21,7 @@ echo "Fetching kernel config from ${SIMICS_HOST}"
 ssh "$SIMICS_HOST" "$SIMICS_SCRIPT config" > "$KERNEL_DIR/.config"
 
 make olddefconfig
-make -j"$(nproc)"
+make -j"${JOBS:-$(nproc)}"
 
 # stale module trees from earlier builds land in the archive otherwise
 rm -rf "$MODULES_DIR"
