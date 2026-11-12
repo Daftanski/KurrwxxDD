@@ -12,8 +12,9 @@ lava/            LAVA server config (linked into ~/lava)
 First steps on a new workstation:
   1. cp ../config.example ../config.txt, fill in your hosts.
   2. LAVA server: doc/lava/03-maintenance.txt 3.
-  3. Per host: ssh key, then ./setup-uefi-dev.sh <ip> (UEFI) or
-     ./setup-kernel-dev.sh <ip> (Linux), then lava/add-device.sh <n>.
+  3. Per host: ./setup-uefi-dev.sh <ip> (UEFI) or ./setup-kernel-dev.sh
+     <ip> (Linux); both install your ssh key (password asked once).
+     Then lava/add-device.sh <n>.
   4. Run tests: doc/lava/02-usage.txt 1.
 
 setup-uefi-dev.sh <ip>        deploy uefi-dev to a host

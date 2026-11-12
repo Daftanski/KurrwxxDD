@@ -18,9 +18,10 @@ Simics setups (UEFI, Linux), a test framework, and a LAVA scheduler for automate
 
 1. `cp config.example config.txt` and fill in your hosts. `config.txt` is not in git.
 2. Set up LAVA once: `development/doc/lava/03-maintenance.txt`.
-3. For each Simics host: install your ssh key, then run
-   `development/setup-uefi-dev.sh <ip>` (UEFI) or `development/setup-kernel-dev.sh <ip>` (Linux),
-   then `development/lava/add-device.sh <n>` to register it in LAVA.
+3. For each Simics host, run
+   `development/setup-uefi-dev.sh <ip>` (UEFI) or `development/setup-kernel-dev.sh <ip>` (Linux).
+   Both install your ssh key (the host password is asked once).
+   Then `development/lava/add-device.sh <n>` registers the host in LAVA.
 4. Run tests through LAVA: `development/doc/lava/02-usage.txt`.
 
 ## Rules

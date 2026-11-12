@@ -20,5 +20,7 @@ JOB=$(sed -e "s/^job_name: .*/job_name: simics uefi $MODE - $STEPS/" \
 python3 -c 'import json,sys; print(json.dumps({"definition": sys.stdin.read()}))' <<< "$JOB" |
     curl -s --noproxy '*' -H "Authorization: Token $LAVA_TOKEN" \
          -H 'Content-Type: application/json' -d @- \
-         http://localhost/api/v0.2/jobs/
-echo
+         http://localhost/api/v0.2/jobs/ |
+    python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(d["job_ids"][0] if "job_ids" in d else d)'
