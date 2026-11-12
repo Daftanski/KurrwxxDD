@@ -2,7 +2,7 @@ Simics - UEFI (UEFI shell, driver work)
 =======================================
 Scope:   uefi-dev: boot to the UEFI shell, load and test an EFI
          driver (example: CNIC driver E4999X10.EFI)
-Updated: 2026-11-10
+Updated: 2026-11-12
 Related: 01-overview.txt, development/uefi-dev/readme.txt,
          development/uefi-dev/doc/02-test-guide.txt
 IPs:     ../../../config.txt only
@@ -22,6 +22,9 @@ IPs:     ../../../config.txt only
 -------------
 - fs0: NVMe (Linux disk), fs1: USB drive (our files), fs2: Simics
   agent disk. Tests need fs1:. If not: core/usb-port (USB port).
+  Symptom: "load: File not found" on FS1:. Check the Mapping table
+  in logs/uefi_serial.log. Host 2: USB drives map before NVMe and
+  port 3 gives fs0:, so it uses port 5 (echo 5 > core/usb-port).
 - eth0 = i210 (BIOS driver), eth1..eth8 = CNIC ports.
 - Shell output has ANSI codes (also inside words); serial log
   logs/uefi_serial.log is flushed late: strip codes, wait for a
@@ -42,5 +45,13 @@ IPs:     ../../../config.txt only
   /root/.local/bin, use PATH=/root/.local/bin:$PATH.
 - $bios in startup_scripts/vpc_launch.simics: release BIOS
   (keep a .orig backup).
-- BIOS knob engine fails: copy cached bios_knobs/<hash>/ from a
-  working host.
+- BIOS knob engine fails: restart says "UEFI Shell not reached",
+  logs/simics_console.log has "Could not change BIOS knobs" and
+  FileNotFoundError in bios_knobs/<hash>/. Cause: Simics cannot
+  download the knob tools (progknobs, xmlcli, BpmGen). has-log/
+  simics_vm1.log: "'NoneType' object has no attribute
+  'download_artifact'" = Simics Python has no devtools_base package.
+  Artifactory login does not help (files are public).
+  Fix: development/seed-bios-knob-tools.sh <ip> (puts them in
+  SimicsWorkspace/artifactory/simics-repos/pub/tools/).
+  Check: bios_knobs/<hash>/ must hold *_modified_uefi_dev.bin.

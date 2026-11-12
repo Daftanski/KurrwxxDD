@@ -14,11 +14,13 @@ First steps on a new workstation:
   2. LAVA server: doc/lava/03-maintenance.txt 3.
   3. Per host: ./setup-uefi-dev.sh <ip> (UEFI) or ./setup-kernel-dev.sh
      <ip> (Linux); both install your ssh key (password asked once).
+     UEFI host: also ./seed-bios-knob-tools.sh <ip>.
      Then lava/add-device.sh <n>.
   4. Run tests: doc/lava/02-usage.txt 1.
 
 setup-uefi-dev.sh <ip>        deploy uefi-dev to a host
 setup-kernel-dev.sh <ip>      deploy kernel-dev to a host
+seed-bios-knob-tools.sh <ip>  BIOS knob tools to host cache (03-uefi.txt)
 update-simics-kernel.sh <ip>  build kernel + deploy (run in kernel tree)
 lava/add-device.sh <n>        add/update LAVA device for host n of config.txt
 uefi-dev/misc/dev/ut-nic-core.sh   nic-core unit tests (dev machine)

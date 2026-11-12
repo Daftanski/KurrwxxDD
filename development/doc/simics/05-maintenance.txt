@@ -39,3 +39,4 @@ Related: 01-overview.txt, 04-firmware.txt
      ../../lava/add-device.sh <n>  (LAVA device, ../lava/02-usage.txt 3.).
   3. Deploy the setup(s) you need (01-overview.txt 5.) and check
      its prerequisites (03-uefi.txt 4.).
+  4. uefi-dev: ../../seed-bios-knob-tools.sh <ip> (BIOS knob tools).
