@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: mtu.sh [port] [mtu]   Jumbo MTU (default port 0, 9000) on guest netdev + host tap: full-size DF ping both ways, 1 byte more with DF refused, MTU above maxmtu refused. Needs: ixd.sh done, port not in a bridge. Changes: port MTU (restored). Time: ~35 s.
+# Usage: mtu.sh [port] [mtu]   Jumbo MTU (default port 0, 9000) on guest netdev + host tap: full-size DF ping both ways, 1 byte more with DF refused, MTU above maxmtu refused. Needs: ixd.sh done, port not in a bridge. Changes: port MTU (restored). Time: ~15 s.
 . "$(dirname "$0")/../lib.sh"
 P=${1:-0}
 MTU=${2:-9000}

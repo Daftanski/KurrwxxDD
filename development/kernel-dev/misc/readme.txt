@@ -1,27 +1,29 @@
-# misc/ - kernel-dev tests (run on the Simics host, no LAVA)
+# misc/ - kernel-dev tests (run on the Simics host, ONLY through LAVA)
 
 ## Catalog (no need to read the tests)
 
-   bash run-tests.sh list      (works on the dev machine too, no ssh)
+   ~/lava/svl/lava-test.sh list kernel     (= bash run-tests.sh list, local)
    One line per test = line 2 of tests/<name>.sh:
      <name>.sh [args]   What. Needs: <state>. Changes: <what>. Time: <wall time>.
    Changes: none | port(s) (restored) | driver (ixd state of the guest).
-   Last line: the suites.
+   Last lines: extra steps and suites.
 
-## Run (from the dev machine)
+## Run (from the workstation, through the LAVA queue)
 
-   ssh root@<host ip> /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh [step ...]
+   ~/lava/svl/lava-test.sh kernel <tag> <step ...>
+   step = test name, name:arg,arg (= tests/name.sh arg arg), restart, install,
+          or suite (all, net, driver, full).
+     restart  - kill Simics, start it again (boot waits for the guest)
+     install  - image/kernel_output.tar.gz (from update-simics-kernel.sh) into
+                the image, then restart. Follow with boot.
+   Examples: lava-test.sh kernel pfp install boot ixd ping
+             lava-test.sh kernel pfp ixd mtu:0,9000
+   Output (run-tests.sh): PASS/FAIL/INFO lines, "== <step>", ends with
+   "== failed: <list>". A failed restart or install, or no guest in boot, stops the run.
+   Never run run-tests.sh / tests / core scripts on the host by hand.
 
-   step = test name, restart, or suite (all, net, full; see list).
-   run-tests.sh                - all = restart boot ixd ping
-   run-tests.sh boot ixd net   - no restart: tests the running guest
-   tests/<name>.sh [args]      - one test with args; PASS/FAIL/INFO lines, exit 1 on any FAIL
-   Output ends with "== failed: <list>" (none = all passed).
-   A failed restart or boot stops the run.
-   restart kills the running Simics: check nobody uses the host (who, guest sessions).
-
-   Deploy after a change: ../../setup-kernel-dev.sh <host ip> copy
-   (copy = files only; without it also core/setup.sh, the image; update-simics-kernel.sh does both).
+   Deploy after a test change: ../../setup-kernel-dev.sh <host ip> copy
+   (copy = files only; without it also core/setup.sh, the image).
 
 ## Known (Simics)
 
@@ -34,6 +36,8 @@
    - Some kernel messages print once per boot (DO_ONCE, e.g. "hw csum failure"):
      only the first test that triggers it reports it; boot.sh (whole dmesg)
      reports it in every later run until the next restart.
+   - dmesg ring buffer is full already after boot (ixd is verbose): a test marks
+     its start with a line in /dev/kmsg (dmesg_mark), never a line count.
 
 ## Findings (open)
 
@@ -44,7 +48,11 @@
    F2 2026-11-18 same setup: once on a port 0 link down (mtu/linkflap/abort
       runs): "eth6: Failed to receive marker packets" (idpf_virtchnl.c ~373,
       TX SW marker not completed on queue disable). Not seen again in a
-      later net run. Intermittent; maybe the slow Simics time vs the wait timeout.
+      later net run. Again in LAVA job 5 (ping.sh, port 7 eth8 link down,
+      CI kernel). Intermittent; maybe the slow Simics time vs the wait timeout.
+   F1 also on CI kernel 6.18.1-ixd-32236.22707 (LAVA job 4, large.sh, port 0
+      eth7). Same run: guest->host 1472 B ping lost 2 of 3 replies (1500 B
+      frames, guest RX): maybe the same csum fault (bad csum = drop). Not proven.
    Both stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
 ## How the guest is reached
@@ -75,4 +83,5 @@
    5. A test restores what it changes. port_up state is restored on any exit
       (EXIT trap in lib.sh); a test with its own trap EXIT must call ports_restore.
       Changes: driver tests refuse to destroy someone's setup (SFs, bridges).
-   6. Add a test to a suite in run-tests.sh only after it passes alone.
+   6. Add a test to a suite in run-tests.sh only after it passes alone (LAVA job
+      with only that test).

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: reload.sh [n]   rmmod ixd + modprobe ixd n times (default 1); after each: 8 physical ports back within 5 min, ixd.sh checks pass, no BUG/ixd error in dmesg. Needs: ixd.sh done, no SFs/bridges on ixd (refuses, FORCE=1 overrides). Changes: driver (all ixd netdevs re-created). Time: ~3 min/cycle (estimate, not run yet).
+# Usage: reload.sh [n]   rmmod ixd + modprobe ixd n times (default 1); after each: 8 physical ports back within 5 min, ixd.sh checks pass, no BUG/ixd error in dmesg. Needs: ixd.sh done, no SFs/bridges on ixd (refuses, FORCE=1 overrides). Changes: driver (all ixd netdevs re-created). Time: ~1 min/cycle.
 . "$(dirname "$0")/../lib.sh"
 N=${1:-1}
 guest_need
@@ -11,6 +11,7 @@ if [ "$SFS" != 0 ] && [ "$FORCE" != 1 ]; then
     exit 1
 fi
 dmesg_mark
+export DMESG_TAG
 
 for I in $(seq $N); do
     check "cycle $I rmmod" "$(g "rmmod ixd 2>&1; echo rc=\$?" | tr '\n' ' ')" "rc=0 $"
@@ -25,7 +26,7 @@ for I in $(seq $N); do
     check_eq "cycle $I physical ports" "$PORTS" 8
 
     if "$(dirname "$0")/ixd.sh" > /tmp/reload-ixd.log; then :; else FAILS=$((FAILS + 1)); fi
-    sed -n "s/^\(PASS\|FAIL\) /\1 cycle $I ixd: /p" /tmp/reload-ixd.log
+    sed -n -e "s/^\(PASS\|FAIL\) /\1 cycle $I ixd: /p" -e '/^\[/p' /tmp/reload-ixd.log
 done
 
 check_dmesg "dmesg clean"

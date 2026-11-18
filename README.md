@@ -10,7 +10,8 @@ Simics setups (UEFI, Linux), a test framework, and a LAVA scheduler for automate
 | `development/` | Everything shared. Start with `development/README.txt`. |
 | `development/uefi-dev/` | UEFI setup: EFI driver in the UEFI Shell, tests in `misc/`. |
 | `development/kernel-dev/` | Linux setup: own kernel on the Simics guest. |
-| `development/lava/` | LAVA server config, job template, `add-device.sh`. |
+| `development/lava/` | LAVA server config, job template, `add-device.sh`, `lava-test.sh`. |
+| `development/skills/` | AI agent skills (`lava-test`), linked into `~/.config/opencode/skills/`. |
 | `development/doc/` | How-to: `simics/` (platform), `lava/` (scheduler). |
 | `config.example` | Template for the private `config.txt` (hosts, roles). |
 
@@ -22,10 +23,10 @@ Simics setups (UEFI, Linux), a test framework, and a LAVA scheduler for automate
    `development/setup-uefi-dev.sh <ip>` (UEFI) or `development/setup-kernel-dev.sh <ip>` (Linux).
    Both install your ssh key (the host password is asked once).
    Then `development/lava/add-device.sh <n>` registers the host in LAVA.
-4. Run tests: UEFI through LAVA (`development/doc/lava/02-usage.txt`); Linux by hand over ssh
-   (`development/kernel-dev/misc/readme.txt`).
+4. Run tests through LAVA: `~/lava/svl/lava-test.sh <uefi|kernel> <tag> <step ...>`
+   (`development/doc/lava/02-usage.txt`). AI agents: skill `development/skills/lava-test`.
 
 ## Rules
 
 - No IPs, passwords or tokens in committed files. Hosts live in `config.txt`, secrets in `~/lava`.
-- UEFI Simics tests run only through LAVA, one job per host. kernel-dev tests run by hand (no LAVA).
+- Simics tests (UEFI and Linux) run only through LAVA, one job per host.

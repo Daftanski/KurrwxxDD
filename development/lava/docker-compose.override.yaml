@@ -5,6 +5,17 @@ services:
     volumes:
     - ./svl/settings.d/03-svl-autoregister.yaml:/etc/lava-server/settings.d/03-svl-autoregister.yaml:ro
 
+  # Web UI + API port on the workstation: DC_LAVA_HTTP_PORT in .env (default 80).
+  # Scripts read LAVA_URL from svl/token.env (default http://localhost).
+  apache2:
+    ports: !override
+    - ${DC_LAVA_HTTP_PORT:-80}:80
+
+  # Publisher (events) is used only inside the compose network: no host ports
+  # (8001 is often taken on the workstation).
+  lava-publisher:
+    ports: !reset []
+
   lava-dispatcher:
     image: lava-svl-dispatcher:latest
     build: !override

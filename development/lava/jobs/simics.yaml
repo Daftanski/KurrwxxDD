@@ -1,7 +1,7 @@
-# Usage: lavacli jobs submit svl/jobs/simics-ping.yaml   (or web UI: Scheduler > Submit)
-# Override steps: change STEPS below. PFP mode: set PFP to TRUE.
+# Generic Simics job. Do not submit by hand: lava-test.sh / submit.sh fill in
+# job_name, tags, SETUP (uefi|kernel), STEPS (run-tests.sh steps) and PFP.
 device_type: ssh
-job_name: simics uefi - restart + ping
+job_name: simics
 priority: medium
 visibility: public
 tags: []
@@ -34,16 +34,17 @@ actions:
       minutes: 280
     definitions:
     - from: inline
-      name: simics-uefi
-      path: inline/simics-uefi.yaml
+      name: simics
+      path: inline/simics.yaml
       parameters:
-        STEPS: "restart ping"
+        SETUP: "uefi"
+        STEPS: "restart"
         PFP: "FALSE"
       repository:
         metadata:
           format: Lava-Test Test Definition 1.0
-          name: simics-uefi
-          description: run-tests.sh steps on the Simics host
+          name: simics
+          description: run-tests.sh steps of development/<SETUP>-dev on the Simics host
         run:
           steps:
-          - PATH=/root/.local/bin:$PATH PFP=$PFP /root/SimicsWorkspace/development/uefi-dev/misc/lava-run.sh $STEPS
+          - PATH=/root/.local/bin:$PATH PFP=$PFP /root/SimicsWorkspace/development/$SETUP-dev/misc/lava-run.sh $STEPS

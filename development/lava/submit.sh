@@ -1,26 +1,31 @@
 #!/bin/bash
-# Usage: submit.sh [PFD|PFP] [step ...]   (default: PFD all)
-# Submits one Simics job to LAVA and prints the job id.
+# Usage: submit.sh <uefi|kernel> <tag> [step ...]   (default steps: all)
+# Submits one Simics job and prints only the job id. tag = device tag = role in
+# config.txt (pfd, pfp); PFP=TRUE for tag pfp. AI and people: use lava-test.sh.
 cd "$(dirname "$0")"
 source ./token.env
-MODE=${1:-PFD}
-shift
+LAVA_URL=${LAVA_URL:-http://localhost}
+SETUP=$1
+TAG=$(tr A-Z a-z <<< "$2")
+if [[ $SETUP != uefi && $SETUP != kernel ]] || [[ -z $TAG ]]; then
+    echo "Usage: $0 <uefi|kernel> <tag> [step ...]" >&2
+    exit 1
+fi
+shift 2
 STEPS=${*:-all}
 PFP=FALSE
-TAG=pfd
-if [ "$MODE" = PFP ]; then
-    PFP=TRUE
-    TAG=pfp
-fi
-# Device tag picks the host of that mode.
-JOB=$(sed -e "s/^job_name: .*/job_name: simics uefi $MODE - $STEPS/" \
+[ "$TAG" = pfp ] && PFP=TRUE
+JOB=$(sed -e "s/^job_name: .*/job_name: \"$SETUP $TAG: $STEPS\"/" \
           -e "s/^tags: .*/tags: [$TAG]/" \
+          -e "s/SETUP: .*/SETUP: \"$SETUP\"/" \
           -e "s/STEPS: .*/STEPS: \"$STEPS\"/" \
-          -e "s/PFP: .*/PFP: \"$PFP\"/" jobs/simics-ping.yaml)
+          -e "s/PFP: .*/PFP: \"$PFP\"/" jobs/simics.yaml)
 python3 -c 'import json,sys; print(json.dumps({"definition": sys.stdin.read()}))' <<< "$JOB" |
     curl -s --noproxy '*' -H "Authorization: Token $LAVA_TOKEN" \
          -H 'Content-Type: application/json' -d @- \
-         http://localhost/api/v0.2/jobs/ |
+         "$LAVA_URL/api/v0.2/jobs/" |
     python3 -c 'import json,sys
 d = json.load(sys.stdin)
-print(d["job_ids"][0] if "job_ids" in d else d)'
+if "job_ids" not in d:
+    sys.exit("submit failed: %s" % d)
+print(d["job_ids"][0])'

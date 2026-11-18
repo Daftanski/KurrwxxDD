@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: large.sh [ports...]   Pings of 1472/4000/8000 bytes both ways per port (default 0): IP fragments at MTU 1500; no BUG/ixd error (e.g. "hw csum failure") in dmesg. Needs: ixd.sh done, ports not in a bridge. Changes: ports (restored). Time: ~30 s/port.
+# Usage: large.sh [ports...]   Pings of 1472/4000/8000 bytes both ways per port (default 0): IP fragments at MTU 1500; no BUG/ixd error (e.g. "hw csum failure") in dmesg. Needs: ixd.sh done, ports not in a bridge. Changes: ports (restored). Time: ~15 s/port.
 . "$(dirname "$0")/../lib.sh"
 PORTS=${*:-0}
 guest_need

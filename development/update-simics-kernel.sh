@@ -34,6 +34,6 @@ tar czf "$ARCHIVE" arch/x86/boot/bzImage -C "$MODULES" lib/modules
 echo "Sending $ARCHIVE to $SIMICS_HOST:$DEV/image"
 scp "$ARCHIVE" "$SIMICS_HOST:$DEV/image/"
 
-ssh "$SIMICS_HOST" "$DEV/core/install.sh"
-
-ssh "$SIMICS_HOST" "$DEV/core/restart.sh"
+# Install + restart touch the running Simics: only inside a LAVA job (queued).
+echo "Copied. Install and test through LAVA, e.g.:"
+echo "  ~/lava/svl/lava-test.sh kernel <tag> install boot ixd"

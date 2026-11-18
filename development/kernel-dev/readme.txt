@@ -20,8 +20,10 @@
        cd <kernel tree>
        <path>/development/update-simics-kernel.sh <host ip>
    Runs setup-kernel-dev.sh, takes .config from the image, builds,
-   copies bzImage + modules into the image, repacks the .craff and
-   runs core/restart.sh. Console: VNC display :1 (port 5901).
+   copies bzImage + modules to the host (image/kernel_output.tar.gz).
+   Install (into the image, repack .craff, restart) through LAVA:
+       ~/lava/svl/lava-test.sh kernel <tag> install boot ixd
+   Console: VNC display :1 (port 5901).
 
 ## core/
 

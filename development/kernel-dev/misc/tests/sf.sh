@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: sf.sh [port] [sfnum]   On the PF of port P (default 0, sfnum 90+P): devlink port add pcisf -> representor; state active -> attached, aux ixd.sf.* + SF netdev appear, SF netdev up; delete -> all gone. Needs: ixd.sh done, eswitch switchdev. Changes: driver (one SF added and removed). Time: ~2 min (estimate, not run yet).
+# Usage: sf.sh [port] [sfnum]   On the PF of port P (default 0, sfnum 90+P): devlink port add pcisf -> representor; state active -> attached, aux ixd.sf.* + SF netdev appear, SF netdev up; delete -> all gone. Needs: ixd.sh done, eswitch switchdev. Changes: driver (one SF added and removed). Time: ~10 s.
 . "$(dirname "$0")/../lib.sh"
 P=${1:-0}
 SFN=${2:-$((90 + P))}

@@ -154,17 +154,26 @@ host_ping() {
 }
 
 # --- dmesg -------------------------------------------------------------------
-DMESG_OOPS='BUG:|Oops|WARNING:|Call Trace|general protection'
+# Space before BUG/WARNING: not "EDAC DEBUG:".
+DMESG_OOPS=' (BUG|WARNING): |Oops|Call Trace|general protection'
 DMESG_IXD='ixd.*([Ee]rror|[Ff]ail|[Tt]imeout)'
-DMESG_N=0
-# dmesg_mark: check_dmesg looks only at lines after this point.
+# Inherited from a parent test (reload.sh runs ixd.sh): check from its mark.
+DMESG_TAG=${DMESG_TAG:-}
+# dmesg_mark: write a marker into the kernel log; check_dmesg looks only after it.
+# (Not a line count: ixd fills the ring buffer, it wraps already at boot.)
 dmesg_mark() {
-    DMESG_N=$(g "dmesg | wc -l")
+    DMESG_TAG="kdev-mark-$NAME-$$-$RANDOM"
+    g "echo $DMESG_TAG > /dev/kmsg"
 }
 # check_dmesg <label> [regex]: no line matches (default: oops or ixd error).
+# Without dmesg_mark: whole dmesg. Marker wrapped out: whole buffer (all newer).
 check_dmesg() {
     local BAD
-    BAD=$(g "dmesg | tail -n +$((DMESG_N + 1))" | grep -E "${2:-$DMESG_OOPS|$DMESG_IXD}" | head -5 || true)
+    BAD=$(g "dmesg" | awk -v t="$DMESG_TAG" '
+            t != "" && index($0, t) { n = 0; next }
+            { a[++n] = $0 }
+            END { for (i = 1; i <= n; i++) print a[i] }' |
+          grep -E "${2:-$DMESG_OOPS|$DMESG_IXD}" | head -5 || true)
     check_eq "$1" "$(echo -n "$BAD" | grep -c . || true)" 0
     [ -z "$BAD" ] || echo "$BAD"
 }

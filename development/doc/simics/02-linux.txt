@@ -11,12 +11,12 @@ IPs:     ../../../config.txt only
 - Full kernel (from kernel tree root):
     KurrwxxDD/development/update-simics-kernel.sh <host ip>
   Copies kernel-dev to the host, takes the image .config, builds,
-  installs bzImage + modules into the dev disk image, restarts
-  Simics.
+  copies bzImage + modules to the host. Install into the image +
+  restart = LAVA step: lava-test.sh kernel <tag> install boot ...
 - "modprobe: FATAL: Module loop not found" on some hosts: harmless.
-- Tests (by hand, no LAVA): ssh root@<host ip>
-    /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh
-  <steps>. Catalog: run-tests.sh list. development/kernel-dev/misc/readme.txt.
+- Tests: only through LAVA: ~/lava/svl/lava-test.sh kernel <tag>
+  <steps>. Catalog: lava-test.sh list kernel.
+  development/kernel-dev/misc/readme.txt.
 - Guest time runs ~30x slower than wall time: sleep 1 / ping -i 1 on
   the guest costs ~30 s.
 - PFD/PFP: PFP=TRUE|FALSE for core/restart.sh; unset = host's own

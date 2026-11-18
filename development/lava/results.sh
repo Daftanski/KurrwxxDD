@@ -7,7 +7,7 @@ if [[ "$1" == "--wait" ]]; then
     WAIT=1
     shift
 fi
-API=http://localhost/api/v0.2/jobs/$1
+API=${LAVA_URL:-http://localhost}/api/v0.2/jobs/$1
 get() {
     curl -s --noproxy '*' -H "Authorization: Token $LAVA_TOKEN" "$API/$1"
 }

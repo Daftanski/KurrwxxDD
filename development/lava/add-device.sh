@@ -31,6 +31,16 @@ TAG=$(echo "${ROLE%% *}" | tr A-Z a-z)
 TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT
 sed "s/@HOST_IP@/$IP/" "$HERE/devices/simics-host.jinja2.template" > "$TMP"
+chmod 644 "$TMP"
+
+# Shell not (yet) in group docker (added without a new login): go through sg.
+docker() {
+    if command docker info > /dev/null 2>&1; then
+        command docker "$@"
+    else
+        sg docker -c "docker $(printf '%q ' "$@")"
+    fi
+}
 
 cd "$LAVA_DIR"
 docker compose cp "$TMP" lava-server:$REMOTE
@@ -40,6 +50,9 @@ docker compose exec -T lava-server chown lavaserver:lavaserver $REMOTE
 if docker compose exec -T lava-server lava-server manage devices list | grep -q "^\* $NAME ("; then
     echo "device $NAME exists, file updated"
 else
+    # New server: the ssh template exists but the device type is not in the DB yet.
+    docker compose exec -T lava-server lava-server manage device-types list | grep -q '^\* ssh\b' ||
+        docker compose exec -T lava-server lava-server manage device-types add ssh
     docker compose exec -T lava-server lava-server manage devices add --device-type ssh --worker worker0 $NAME
 fi
 

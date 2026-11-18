@@ -1,6 +1,7 @@
 #!/bin/bash
-# Usage: boot.sh [minutes]   Wait for guest ssh (default 20 min); uname == kernel install.sh put in the image; no BUG/Oops/WARNING in dmesg. Needs: Simics started (restart). Changes: none. Time: ~5 min after restart, seconds if up.
+# Usage: boot.sh [minutes]   Wait for guest ssh (default 20 min); uname == kernel install.sh put in the image; no BUG/Oops/WARNING in dmesg. Needs: Simics started (restart). Changes: none. Time: ~7 min after restart, seconds if up.
 . "$(dirname "$0")/../lib.sh"
+# Exit 2 = no guest (run-tests.sh stops), 1 = other FAIL.
 MAX=${1:-20}
 CONSOLE=$DEV/logs/simics_console.log
 
@@ -10,11 +11,11 @@ until guest_find; do
     if ! pgrep -x simics > /dev/null; then
         echo "FAIL simics running (died, $CONSOLE:)"
         tail -20 $CONSOLE 2> /dev/null || true
-        exit 1
+        exit 2
     fi
     if [ $SECONDS -ge $END ]; then
         echo "FAIL guest ssh (no answer after $MAX min, MAC $(guest_mac || true))"
-        exit 1
+        exit 2
     fi
     sleep 15
 done
