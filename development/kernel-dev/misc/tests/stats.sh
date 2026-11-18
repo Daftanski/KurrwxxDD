@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: stats.sh [A:B] [n]   Loopback pair (default 0:1, 20): n pings A->B; per-queue rx/tx_q-*_pkts grow by >= n-1 on both ports; VSI counters (ethtool rx/tx-unicast, ip -s) INFO only, HWSTATS=1 checks them. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~30 s.
+# Usage: stats.sh [A:B] [n]   Loopback pair (default 0:1, 20): n pings A->B; per-queue rx/tx_q-*_pkts grow by >= n-1 on both ports; VSI counters (ethtool rx/tx-unicast, ip -s) INFO only, HWSTATS=1 checks them. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~15 s.
 . "$(dirname "$0")/../lib.sh"
 read -r A B <<< "$(pair_split $1)"
 N=${2:-20}

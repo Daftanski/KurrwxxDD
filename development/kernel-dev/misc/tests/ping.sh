@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ping.sh [A:B ...]   Loopback pairs (default all 8 ports: 0:1 2:3 4:5 6:7; PFP: port = PF): ping A->B and B->A (10 each, >= 9), both host taps carried them. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~40 s/pair.
+# Usage: ping.sh [A:B ...]   Loopback pairs (default all 8 ports: 0:1 2:3 4:5 6:7; PFP: port = PF): ping A->B and B->A (10 each, >= 9), both host taps carried them. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~10 s/pair.
 . "$(dirname "$0")/../lib.sh"
 PAIRS=${*:-$ALL_PAIRS}
 N=10

@@ -92,8 +92,20 @@ LOOP_DEV_A=""
 LOOP_DEV_B=""
 declare -A LOOP_SAVE
 
-# Any exit (finish, ABORT, Ctrl-C) restores the loopback.
-trap loop_down EXIT
+# at_exit "<cmd>": run <cmd> on any exit (newest first), before loop_down.
+# Tests never set their own trap EXIT.
+EXIT_HOOKS=()
+at_exit() {
+    EXIT_HOOKS=("$*" "${EXIT_HOOKS[@]}")
+}
+lib_exit() {
+    local C
+    for C in "${EXIT_HOOKS[@]}"; do eval "$C" || true; done
+    EXIT_HOOKS=()
+    loop_down
+}
+# Any exit (finish, ABORT, Ctrl-C) runs the hooks and restores the loopback.
+trap lib_exit EXIT
 
 # gb <cmd>: run a command on the guest inside LOOP_NS (port B side). No ' in <cmd>.
 gb() {
@@ -232,6 +244,34 @@ loop_ping_ba() {
 # tap_rx <port>: packets the guest sent out of port P (tap RX on the host).
 tap_rx() {
     cat /sys/class/net/$(tap $1)/statistics/rx_packets
+}
+
+# Guest packet capture on side A, no promiscuous mode (-p): counts what the
+# device lets up to the stack. gcap_start <dev> <filter>; send; gcap_stop -> count.
+# setsid + all fds redirected: the background tcpdump must not hold the ssh session.
+gcap_start() {
+    g "rm -f /tmp/kdev-cap.*
+       setsid tcpdump -p -n -l -i $1 $2 < /dev/null > /tmp/kdev-cap.txt 2> /tmp/kdev-cap.err &
+       echo \$! > /tmp/kdev-cap.pid
+       for I in \$(seq 50); do grep -q listening /tmp/kdev-cap.err 2> /dev/null && break; sleep 0.1; done" || true
+    at_exit 'g "kill \$(cat /tmp/kdev-cap.pid 2> /dev/null) 2> /dev/null"'
+}
+gcap_stop() {
+    g "sleep 0.5; kill \$(cat /tmp/kdev-cap.pid); sleep 0.2; grep -c . /tmp/kdev-cap.txt || true" 2> /dev/null || true
+}
+
+# Host packet capture: hcap_start <tap> <filter>; send; hcap_stop -> count.
+hcap_start() {
+    tcpdump -l -n -i $1 $2 > /tmp/kdev-hcap.txt 2> /dev/null &
+    HCAP_PID=$!
+    at_exit "kill $HCAP_PID 2> /dev/null"
+    sleep 2
+}
+hcap_stop() {
+    sleep 1
+    kill $HCAP_PID 2> /dev/null || true
+    wait $HCAP_PID 2> /dev/null || true
+    grep -c . /tmp/kdev-hcap.txt || true
 }
 
 # --- dmesg -------------------------------------------------------------------

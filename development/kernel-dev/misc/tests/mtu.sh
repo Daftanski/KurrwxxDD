@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: mtu.sh [A:B] [mtu]   Loopback pair (default 0:1, 9000): MTU on both ports + taps; full-size DF ping A->B and B->A, 1 byte more with DF refused, MTU above maxmtu refused; MTU restored. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~40 s.
+# Usage: mtu.sh [A:B] [mtu]   Loopback pair (default 0:1, 9000): MTU on both ports + taps; full-size DF ping A->B and B->A, 1 byte more with DF refused, MTU above maxmtu refused; MTU restored. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~10 s.
 . "$(dirname "$0")/../lib.sh"
 read -r A B <<< "$(pair_split $1)"
 MTU=${2:-9000}

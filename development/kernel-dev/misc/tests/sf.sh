@@ -24,7 +24,7 @@ cleanup() {
     g "devlink port function set $PORT state inactive 2> /dev/null; devlink port del $PORT 2> /dev/null" || true
     PORT=""
 }
-trap cleanup EXIT
+at_exit cleanup
 
 # --- Add: "pci/<pf>/<idx>: type eth netdev <repr> flavour pcisf ..." -----------
 OUT=$(g "devlink port add pci/$PCI flavour pcisf pfnum $PF sfnum $SFN 2>&1" || true)

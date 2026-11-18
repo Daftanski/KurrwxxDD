@@ -12,7 +12,7 @@
 
    ~/lava/svl/lava-test.sh kernel <tag> <step ...>
    step = test name, name:arg,arg (= tests/name.sh arg arg), restart, install,
-          or suite (all, net, driver, full).
+          or suite (all, net, feat, driver, full).
      restart  - kill Simics, start it again (boot waits for the guest)
      install  - image/kernel_output.tar.gz (from update-simics-kernel.sh) into
                 the image, then restart. Follow with boot.
@@ -62,6 +62,15 @@
       base-table entries ... -110": CP mailbox does not answer. reload
       passed in jobs 4, 5 and 9 (after restart): intermittent. Guest stays
       broken: next job needs restart. reload.sh prints the blocked stacks.
+   F4 2026-11-18 LAVA job 15 (CI kernel, PFP, loopback 0:1): multicast RX
+      does not work. B's frames to 01:00:5e:01:01:01 reach host tap A (10/10),
+      the same tcpdump -p on port A sees unicast (10/10), but 0 multicast
+      frames, also with the group joined (ip maddr add) or ALLMULTI on.
+      Driver does not program a multicast/allmulti rx rule (only "SEM rx rule
+      match port forward to vsi" in dmesg)? allmulti.sh, not in a suite.
+   F2 reproducible since job 14: allmulti.sh, port 1 (eth3) when loop_down
+      moves it back from the netns (queues disabled): "Failed to receive
+      marker packets".
    F1/F2 stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
 ## Traffic model: loopback (all traffic tests)
@@ -108,8 +117,10 @@
       loop_down. Side B commands: gb "<cmd>" (no ' inside).
       Errors: dmesg_mark at start, check_dmesg at end.
    4. Results only via check / check_eq / check_ge (PASS/FAIL lines), end with finish.
-   5. A test restores what it changes. loop_up state is restored on any exit
-      (EXIT trap in lib.sh); a test with its own trap EXIT must call loop_down.
+   5. A test restores what it changes. loop_up state is restored on any exit;
+      own cleanup: at_exit "<cmd>" (runs first). Never trap EXIT in a test.
+   7. Ported from BATS (drivers.ethernet.linux.bats): line 3 = "# From: BATS
+      hsd<id>[, hsd<id>]". Port the idea, add loopback traffic, not the code.
       Changes: driver tests refuse to destroy someone's setup (SFs, bridges).
    6. Add a test to a suite in run-tests.sh only after it passes alone (LAVA job
       with only that test).

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: linkflap.sh [A:B] [n]   Loopback pair (default 0:1, 5): ip link down/up of port A n times, carrier back each time, then ping A->B and B->A. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~30 s + 10 s/flap.
+# Usage: linkflap.sh [A:B] [n]   Loopback pair (default 0:1, 5): ip link down/up of port A n times, carrier back each time, then ping A->B and B->A. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~5 s + 2 s/flap.
 . "$(dirname "$0")/../lib.sh"
 read -r A B <<< "$(pair_split $1)"
 N=${2:-5}

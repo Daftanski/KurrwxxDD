@@ -8,7 +8,7 @@ if [[ -z ${1:-} ]]; then
 fi
 
 HOST=root@$1
-WORKSPACE=$(pwd)
+WORKSPACE=$(dirname "$(readlink -f "$0")")
 DEV=/root/SimicsWorkspace/development/kernel-dev
 SSH_KEY=$HOME/.ssh/id_rsa
 
