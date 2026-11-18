@@ -85,6 +85,7 @@ declare -A PORT_DEV PORT_WAS_UP PORT_MTU PORT_HOST_MTU
 ports_restore() {
     local P
     for P in "${!PORT_DEV[@]}"; do port_down $P; done
+    loop_down
 }
 trap ports_restore EXIT
 port_up() {
@@ -151,6 +152,105 @@ guest_ping() {
 }
 host_ping() {
     ping -n -c $2 -W 3 -I $(tap $1) "${@:3}" $(guest_ip $1) 2>&1 | grep transmitted || true
+}
+
+# --- Loopback: two guest ports wired together on the host ---------------------
+# Host: bridge LOOP_BR with cnic_tap_0_A + cnic_tap_0_B = a cable A <-> B.
+# Guest: port B's netdev in netns LOOP_NS (else the kernel short-cuts traffic
+# between two local addresses); A = LOOP_IP_A (init ns), B = LOOP_IP_B (LOOP_NS).
+# Like kernel selftests: local side + remote side in a netns.
+LOOP_BR=kdev-loop
+LOOP_NS=kdev-peer
+LOOP_IP_A=10.99.0.1
+LOOP_IP_B=10.99.0.2
+LOOP_A=""
+LOOP_B=""
+LOOP_DEV_A=""
+LOOP_DEV_B=""
+
+# gb <cmd>: run a command on the guest inside LOOP_NS (port B side).
+gb() {
+    g "ip netns exec $LOOP_NS sh -c '$*'"
+}
+
+# loop_up <portA> <portB>: set up the loopback; return 1 (FAIL printed) if not possible.
+loop_up() {
+    local P D M
+    for P in $1 $2; do
+        D=$(guest_dev $P)
+        M=$( [ -n "$D" ] && g "ip -o link show dev $D" | grep -oP ' master \K\S+' || true)
+        if [ -z "$D" ] || [ -n "$M" ]; then
+            echo "FAIL loop port $P free (netdev '${D:-none}', master '${M:-none}')"
+            FAILS=$((FAILS + 1))
+            return 1
+        fi
+        M=$(ip -o link show dev $(tap $P) | grep -oP ' master \K\S+' || true)
+        if [ -n "$M" ] && [ "$M" != $LOOP_BR ]; then
+            echo "FAIL loop tap $(tap $P) free (in $M, not touched)"
+            FAILS=$((FAILS + 1))
+            return 1
+        fi
+    done
+    LOOP_A=$1
+    LOOP_B=$2
+    LOOP_DEV_A=$(guest_dev $1)
+    LOOP_DEV_B=$(guest_dev $2)
+
+    # Host cable. No STP, no forward delay: forwards at once.
+    ip link show $LOOP_BR > /dev/null 2>&1 || ip link add $LOOP_BR type bridge stp_state 0 forward_delay 0
+    for P in $1 $2; do
+        ip addr flush dev $(tap $P)
+        ip link set $(tap $P) master $LOOP_BR
+        ip link set $(tap $P) up
+    done
+    ip link set $LOOP_BR up
+
+    # Guest: B into the netns.
+    g "ip netns add $LOOP_NS 2> /dev/null; ip link set $LOOP_DEV_B netns $LOOP_NS
+       ip addr replace $LOOP_IP_A/24 dev $LOOP_DEV_A; ip link set $LOOP_DEV_A up
+       ip -n $LOOP_NS addr replace $LOOP_IP_B/24 dev $LOOP_DEV_B
+       ip -n $LOOP_NS link set $LOOP_DEV_B up; ip -n $LOOP_NS link set lo up" || true
+
+    local I
+    for I in $(seq 30); do
+        [ "$(g "cat /sys/class/net/$LOOP_DEV_A/carrier" 2> /dev/null)" = 1 ] &&
+            [ "$(gb "cat /sys/class/net/$LOOP_DEV_B/carrier" 2> /dev/null)" = 1 ] && break
+        sleep 1
+    done
+    check_eq "loop port $1 link ($LOOP_DEV_A)" "$(g "cat /sys/class/net/$LOOP_DEV_A/carrier" 2> /dev/null || echo none)" 1
+    check_eq "loop port $2 link ($LOOP_DEV_B in $LOOP_NS)" "$(gb "cat /sys/class/net/$LOOP_DEV_B/carrier" 2> /dev/null || echo none)" 1
+    # First traffic after link up can be slow (see port_up).
+    local T=$SECONDS
+    until [[ $(loop_ping_ab 1) == *" 1 received"* ]]; do
+        [ $((SECONDS - T)) -lt 60 ] || break
+    done
+    check "loop first traffic" "$((SECONDS - T)) s" "^([0-9]|[1-5][0-9]) s$"
+}
+
+# loop_down: guest dev back to the init ns (addresses removed, down), netns gone,
+# host taps out of the bridge, bridge gone.
+loop_down() {
+    [ -n "$LOOP_A" ] || return 0
+    g "ip -n $LOOP_NS link set $LOOP_DEV_B netns 1 2> /dev/null; ip netns del $LOOP_NS 2> /dev/null
+       ip addr del $LOOP_IP_A/24 dev $LOOP_DEV_A 2> /dev/null; ip addr flush dev $LOOP_DEV_B
+       ip link set $LOOP_DEV_A down; ip link set $LOOP_DEV_B down" || true
+    local P
+    for P in $LOOP_A $LOOP_B; do ip link set $(tap $P) nomaster 2> /dev/null || true; done
+    ip link del $LOOP_BR 2> /dev/null || true
+    LOOP_A=""
+}
+
+# loop_ping_ab / loop_ping_ba <count> [ping args]: A -> B / B -> A, "transmitted" line.
+loop_ping_ab() {
+    g "ping -n -c $1 -i 0.05 -W 1 -I $LOOP_DEV_A ${*:2} $LOOP_IP_B" 2>&1 | grep transmitted || true
+}
+loop_ping_ba() {
+    gb "ping -n -c $1 -i 0.05 -W 1 -I $LOOP_DEV_B ${*:2} $LOOP_IP_A" 2>&1 | grep transmitted || true
+}
+
+# tap_rx <port>: packets the guest sent out of port P (tap RX on the host).
+tap_rx() {
+    cat /sys/class/net/$(tap $1)/statistics/rx_packets
 }
 
 # --- dmesg -------------------------------------------------------------------

@@ -55,6 +55,16 @@
       frames, guest RX): maybe the same csum fault (bad csum = drop). Not proven.
    Both stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
+## Loopback (two ports back to back, like kernel selftests)
+
+   loop_up A B (lib.sh): host bridge kdev-loop with cnic_tap_0_A + cnic_tap_0_B
+   = a cable; on the guest port B goes into netns kdev-peer (else the kernel
+   short-cuts traffic between two local addresses). A = 10.99.0.1 (init ns),
+   B = 10.99.0.2 (kdev-peer). g "<cmd>" runs on side A, gb "<cmd>" on side B.
+   loop_ping_ab / loop_ping_ba; tap_rx P proves packets left the guest.
+   loop_down (also on any exit) restores guest netns + host taps.
+   PFP: port P = PF P, so loopback.sh 0 1 = PF0 <-> PF1.
+
 ## How the guest is reached
 
    Guest eth0 is bridged to the lab LAN (sim_br0), IP by DHCP, no lease log.
