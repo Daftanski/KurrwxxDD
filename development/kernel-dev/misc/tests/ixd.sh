@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ixd.sh   ixd loaded, PF count fits PFD/PFP, 8 physical devlink ports, one netdev per port (by MAC), no ixd errors in dmesg. Needs: boot.sh done.
+# Usage: ixd.sh   ixd loaded; PFs on ixd: PFD 1, PFP 8; 8 devlink physical ports; port P = netdev with its MAC + "physical port P"; no ixd error in dmesg. Needs: boot.sh done. Changes: none. Time: ~10 s.
 . "$(dirname "$0")/../lib.sh"
 guest_need
 
@@ -21,8 +21,6 @@ for P in $ALL_PORTS; do
     check "port $P devlink" "$(grep -oE "netdev $D flavour physical port [0-9]+" <<< "$DL" || echo none)" "port $P\$"
 done
 
-ERR=$(g "dmesg" | grep -i ixd | grep -i -E "error|fail|timeout" | head -5 || true)
-check_eq "dmesg ixd errors" "$(echo -n "$ERR" | grep -c . || true)" 0
-[ -z "$ERR" ] || echo "$ERR"
+check_dmesg "dmesg ixd errors" "$DMESG_IXD"
 
 finish

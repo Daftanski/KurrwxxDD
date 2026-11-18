@@ -25,7 +25,7 @@ Hidden agent memory holds NO facts. Everything is here or in .notes/.
 - `EXEC_CNIC_BUILD.sh <ip>` = build + deploy + restart. `TARGET=DEBUG` for serial debug prints.
 - Test scope: unit tests + only the targeted Simics test. Full suite ONLY when the user asks.
 - uefi-dev Simics tests run ONLY through LAVA (`~/lava/svl/submit.sh`, `results.sh --wait`). Never run its run-tests.sh on a host by hand. Missing LAVA support for a test = add it first (`development/doc/lava/`).
-- kernel-dev tests: NO LAVA (user choice). Run by hand: `ssh root@<ip> /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh [restart|boot|ixd|ping|all]`. Restart kills Simics: check the host is free first (`who`, guest sessions).
+- kernel-dev tests: NO LAVA (user choice), run by hand over ssh. How: "Linux kernel / ixd" below.
 - Repo rules (nic-core): files are CRLF (check: lines == CR count before commit). Never commit: SharedNssip submodule, NicCorePkg/Include/Version.h (restore after builds), EXEC_CNIC_BUILD.sh, Build/, EFIx64/.
 
 ## Simics hosts
@@ -33,8 +33,15 @@ Hidden agent memory holds NO facts. Everything is here or in .notes/.
 - One job per host. How to work: `development/doc/simics/` (start: 01-overview.txt).
 
 ## Linux kernel / ixd
-- `development/doc/simics/02-linux.txt`. Tests: `development/kernel-dev/misc/readme.txt`.
+- `development/doc/simics/02-linux.txt`.
 - Kernel tree: `/home/mswiatko/kernels/os.linux.kernel.net-next`. Deploy: `update-simics-kernel.sh <ip>` run from it.
+- Tests, when a kernel/ixd change needs checking (do NOT read test sources to choose):
+  1. Pick: `bash KurrwxxDD/development/kernel-dev/misc/run-tests.sh list` (local; per test: args, what, Needs, Changes, Time; suites).
+  2. Changed tests locally? `development/setup-kernel-dev.sh <ip> copy` first.
+  3. Run: `ssh root@<ip> /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh <tests|suite>`, or `.../misc/tests/<name>.sh [args]` for args.
+  4. Changes none/port = just run. driver or `restart` = host must be free (`who` on host and guest, no SFs/bridges) else ask.
+  5. Result: last line `== failed: none` (single test: exit 0). On FAIL read only that test + `misc/readme.txt` "Known".
+- New test: `development/kernel-dev/misc/readme.txt` "Rules" (line 2 = catalog entry).
 
 ## UEFI driver
 - `development/doc/simics/03-uefi.txt`. Not in suites: snpstate, snpdamage, txfill -> run `restart load <test>`.

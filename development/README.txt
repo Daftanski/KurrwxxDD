@@ -19,7 +19,7 @@ First steps on a new workstation:
   4. Run tests: doc/lava/02-usage.txt 1.
 
 setup-uefi-dev.sh <ip>        deploy uefi-dev to a host (+ Artifactory login)
-setup-kernel-dev.sh <ip>      deploy kernel-dev to a host
+setup-kernel-dev.sh <ip> [copy]  deploy kernel-dev to a host (copy = files only)
 setup-artifactory-auth.sh <ip> Artifactory login on host (BIOS knobs)
 seed-bios-knob-tools.sh <ip>  BIOS knob tools to host cache, no login
 update-simics-kernel.sh <ip>  build kernel + deploy (run in kernel tree)

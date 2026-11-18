@@ -3,7 +3,7 @@ set -eo pipefail
 trap 'echo "ABORT. Error on line $LINENO (exit code $?)"' ERR
 
 if [[ -z ${1:-} ]]; then
-    echo "Usage: $0 <ip>"
+    echo "Usage: $0 <ip> [copy]   copy = only copy kernel-dev/ (tests), skip core/setup.sh"
     exit 1
 fi
 
@@ -24,4 +24,5 @@ ssh "$HOST" "mkdir -p $DEV"
 tar -czf - -C "$WORKSPACE/kernel-dev" . | ssh "$HOST" "tar -xzf - --no-same-owner -C $DEV"
 echo "kernel-dev copied to $HOST:$DEV"
 
+[ "${2:-}" = copy ] && exit 0
 ssh "$HOST" "$DEV/core/setup.sh"

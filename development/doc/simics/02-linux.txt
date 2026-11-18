@@ -16,7 +16,9 @@ IPs:     ../../../config.txt only
 - "modprobe: FATAL: Module loop not found" on some hosts: harmless.
 - Tests (by hand, no LAVA): ssh root@<host ip>
     /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh
-  [restart|boot|ixd|ping|all]. development/kernel-dev/misc/readme.txt.
+  <steps>. Catalog: run-tests.sh list. development/kernel-dev/misc/readme.txt.
+- Guest time runs ~30x slower than wall time: sleep 1 / ping -i 1 on
+  the guest costs ~30 s.
 - PFD/PFP: PFP=TRUE|FALSE for core/restart.sh; unset = host's own
   $pfp line in startup_scripts/vpc_launch.simics.
 

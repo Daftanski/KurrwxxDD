@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: boot.sh [minutes]   Wait for the guest (ssh), check it runs our kernel, no oops in dmesg. Needs: Simics started (restart).
+# Usage: boot.sh [minutes]   Wait for guest ssh (default 20 min); uname == kernel install.sh put in the image; no BUG/Oops/WARNING in dmesg. Needs: Simics started (restart). Changes: none. Time: ~5 min after restart, seconds if up.
 . "$(dirname "$0")/../lib.sh"
 MAX=${1:-20}
 CONSOLE=$DEV/logs/simics_console.log
@@ -32,8 +32,6 @@ else
 fi
 
 # --- dmesg: no oops / BUG / WARNING ------------------------------------------
-BAD=$(g "dmesg" | grep -E "BUG:|Oops|WARNING:|Call Trace|general protection" | head -5 || true)
-check_eq "dmesg clean" "$(echo -n "$BAD" | grep -c . || true)" 0
-[ -z "$BAD" ] || echo "$BAD"
+check_dmesg "dmesg clean" "$DMESG_OOPS"
 
 finish

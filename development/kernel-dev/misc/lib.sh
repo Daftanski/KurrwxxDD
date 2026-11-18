@@ -28,6 +28,8 @@ fi
 # all-nodes multicast, then take the IPv4/IPv6 neighbours with that MAC.
 # Guest disk is fresh each boot: host key changes, root needs no password.
 SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+# One shared connection (a guest ssh login takes seconds); dies 15 s after the guest.
+SSH_OPTS+=" -o ControlMaster=auto -o ControlPath=/tmp/kdev-ssh-%C -o ControlPersist=60 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 BRIDGE=sim_br0
 
 # Host's own launch script: core/launch-simics.sh copies it with the MAC unchanged.
@@ -72,6 +74,101 @@ guest_dev() {
     g "ip -o link" | grep -i "link/ether $(mac $1) " | awk -F': ' '{print $2}' | cut -d@ -f1 | head -1 || true
 }
 
+# --- Port setup for traffic --------------------------------------------------
+# port_up <port>: guest netdev up + guest_ip, host tap host_ip, wait for carrier,
+# then for the first ping reply (up to 60 s: the first up after boot is slow).
+# Saves state; port_down restores it.
+# Return 1 (FAIL printed) if the port has no netdev or it is in a bridge
+# (someone's setup, e.g. set-multi.sh: never touched).
+declare -A PORT_DEV PORT_WAS_UP PORT_MTU PORT_HOST_MTU
+# Any exit (finish, ABORT, Ctrl-C) restores the ports still set up.
+ports_restore() {
+    local P
+    for P in "${!PORT_DEV[@]}"; do port_down $P; done
+}
+trap ports_restore EXIT
+port_up() {
+    local P=$1 D M
+    D=$(guest_dev $P)
+    if [ -z "$D" ]; then
+        echo "FAIL port $P netdev (no netdev with MAC $(mac $P))"
+        FAILS=$((FAILS + 1))
+        return 1
+    fi
+    M=$(g "ip -o link show dev $D" | grep -oP ' master \K\S+' || true)
+    if [ -n "$M" ]; then
+        echo "FAIL port $P free ($D is in $M, not touched)"
+        FAILS=$((FAILS + 1))
+        return 1
+    fi
+    PORT_DEV[$P]=$D
+    PORT_WAS_UP[$P]=$(g "ip -o link show dev $D" | grep -c '[<,]UP[,>]' || true)
+    PORT_MTU[$P]=$(g "cat /sys/class/net/$D/mtu")
+    PORT_HOST_MTU[$P]=$(cat /sys/class/net/$(tap $P)/mtu)
+    ip addr replace $(host_ip $P)/24 dev $(tap $P)
+    ip link set $(tap $P) up
+    g "ip link set $D up && ip addr replace $(guest_ip $P)/24 dev $D" || true
+    port_wait_carrier $P 1 30
+    check_eq "port $P link ($D)" "$(port_carrier $P)" 1
+    local T=$SECONDS
+    until [[ $(guest_ping $P 1) == *" 1 received"* ]]; do
+        [ $((SECONDS - T)) -lt 60 ] || break
+    done
+    check "port $P first traffic" "$((SECONDS - T)) s" "^([0-9]|[1-5][0-9]) s$"
+}
+
+# port_down <port>: undo port_up (address, MTU, link state; host tap too).
+port_down() {
+    local P=$1 D=${PORT_DEV[$1]}
+    [ -n "$D" ] || return 0
+    unset "PORT_DEV[$P]"
+    g "ip addr del $(guest_ip $P)/24 dev $D 2> /dev/null; ip link set $D mtu ${PORT_MTU[$P]}" || true
+    [ "${PORT_WAS_UP[$P]}" = 1 ] || g "ip link set $D down" || true
+    ip addr del $(host_ip $P)/24 dev $(tap $P) 2> /dev/null || true
+    ip link set $(tap $P) mtu ${PORT_HOST_MTU[$P]} || true
+}
+
+# port_carrier <port>: 1, 0, or none (link down: carrier unreadable).
+port_carrier() {
+    g "cat /sys/class/net/${PORT_DEV[$1]}/carrier 2> /dev/null" || echo none
+}
+
+# port_wait_carrier <port> <want> <seconds>
+port_wait_carrier() {
+    local I
+    for I in $(seq $3); do
+        [ "$(port_carrier $1)" = "$2" ] && return 0
+        sleep 1
+    done
+    return 0
+}
+
+# guest_ping / host_ping <port> <count> [ping args]: the "packets transmitted" line.
+# -n: no reverse DNS. Guest: Simics virtual time runs ~30x slower than wall time
+# here, a 1 s ping interval costs ~30 s: short interval and wait on the guest.
+guest_ping() {
+    g "ping -n -c $2 -i 0.05 -W 1 -I ${PORT_DEV[$1]} ${*:3} $(host_ip $1)" 2>&1 | grep transmitted || true
+}
+host_ping() {
+    ping -n -c $2 -W 3 -I $(tap $1) "${@:3}" $(guest_ip $1) 2>&1 | grep transmitted || true
+}
+
+# --- dmesg -------------------------------------------------------------------
+DMESG_OOPS='BUG:|Oops|WARNING:|Call Trace|general protection'
+DMESG_IXD='ixd.*([Ee]rror|[Ff]ail|[Tt]imeout)'
+DMESG_N=0
+# dmesg_mark: check_dmesg looks only at lines after this point.
+dmesg_mark() {
+    DMESG_N=$(g "dmesg | wc -l")
+}
+# check_dmesg <label> [regex]: no line matches (default: oops or ixd error).
+check_dmesg() {
+    local BAD
+    BAD=$(g "dmesg | tail -n +$((DMESG_N + 1))" | grep -E "${2:-$DMESG_OOPS|$DMESG_IXD}" | head -5 || true)
+    check_eq "$1" "$(echo -n "$BAD" | grep -c . || true)" 0
+    [ -z "$BAD" ] || echo "$BAD"
+}
+
 # --- Results -----------------------------------------------------------------
 # check <label> <value> <regex>
 check() {
@@ -89,6 +186,16 @@ check_eq() {
         echo "PASS $1 ($2)"
     else
         echo "FAIL $1 (got '$2', want '$3')"
+        FAILS=$((FAILS + 1))
+    fi
+}
+
+# check_ge <label> <number> <min>
+check_ge() {
+    if [ "${2:-x}" -ge "$3" ] 2> /dev/null; then
+        echo "PASS $1 ($2 >= $3)"
+    else
+        echo "FAIL $1 (${2:-none} < $3)"
         FAILS=$((FAILS + 1))
     fi
 }
