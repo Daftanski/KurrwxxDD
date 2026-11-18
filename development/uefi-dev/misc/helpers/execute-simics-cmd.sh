@@ -10,7 +10,8 @@ for CMD in "$@"; do
     CMD=${CMD//\$/\\\$}
     CMD=${CMD//[/\\[}
     CMD=${CMD//]/\\]}
-    SCRIPT+=" send \"$CMD\r\"; expect -re {(simics|running)> };"
+    # Wait for the echo first: Simics may redraw the prompt before running the command.
+    SCRIPT+=" send \"$CMD\r\"; expect -ex \"$CMD\"; expect -re {(simics|running)> };"
 done
 SCRIPT+=' send "\035"; expect "telnet>"; send "quit\r"'
 
