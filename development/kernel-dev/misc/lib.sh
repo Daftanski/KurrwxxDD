@@ -11,16 +11,17 @@ FAILS=0
 PFP=$(cat $DEV/logs/pfp 2> /dev/null || echo FALSE)
 
 # --- Ports -------------------------------------------------------------------
-# Port P: guest netdev with MAC mac P = 192.168.P.101 <-> host cnic_tap_0_P = 192.168.P.200
+# Port P: guest netdev with MAC mac P <-> host cnic_tap_0_P.
 # Guest netdev names do not follow the port order (PFP: eth1 = port 2): find them by MAC.
-tap()      { echo cnic_tap_0_$1; }
-guest_ip() { echo 192.168.$1.101; }
-host_ip()  { echo 192.168.$1.200; }
+# PFP: port P = PF P. Traffic always between two guest ports (loopback, below).
+tap() { echo cnic_tap_0_$1; }
 if [ "$PFP" = TRUE ]; then
     mac() { echo 0a:00:00:0$1:03:1$1; }
 else
     mac() { echo 0a:0$1:00:08:03:18; }
 fi
+# All 8 ports as loopback pairs (A:B).
+ALL_PAIRS="0:1 2:3 4:5 6:7"
 
 # --- Guest access ------------------------------------------------------------
 # eth0 of the guest is bridged to the lab LAN (sim_tap1 -> sim_br0), IP by DHCP,
@@ -74,91 +75,13 @@ guest_dev() {
     g "ip -o link" | grep -i "link/ether $(mac $1) " | awk -F': ' '{print $2}' | cut -d@ -f1 | head -1 || true
 }
 
-# --- Port setup for traffic --------------------------------------------------
-# port_up <port>: guest netdev up + guest_ip, host tap host_ip, wait for carrier,
-# then for the first ping reply (up to 60 s: the first up after boot is slow).
-# Saves state; port_down restores it.
-# Return 1 (FAIL printed) if the port has no netdev or it is in a bridge
-# (someone's setup, e.g. set-multi.sh: never touched).
-declare -A PORT_DEV PORT_WAS_UP PORT_MTU PORT_HOST_MTU
-# Any exit (finish, ABORT, Ctrl-C) restores the ports still set up.
-ports_restore() {
-    local P
-    for P in "${!PORT_DEV[@]}"; do port_down $P; done
-    loop_down
-}
-trap ports_restore EXIT
-port_up() {
-    local P=$1 D M
-    D=$(guest_dev $P)
-    if [ -z "$D" ]; then
-        echo "FAIL port $P netdev (no netdev with MAC $(mac $P))"
-        FAILS=$((FAILS + 1))
-        return 1
-    fi
-    M=$(g "ip -o link show dev $D" | grep -oP ' master \K\S+' || true)
-    if [ -n "$M" ]; then
-        echo "FAIL port $P free ($D is in $M, not touched)"
-        FAILS=$((FAILS + 1))
-        return 1
-    fi
-    PORT_DEV[$P]=$D
-    PORT_WAS_UP[$P]=$(g "ip -o link show dev $D" | grep -c '[<,]UP[,>]' || true)
-    PORT_MTU[$P]=$(g "cat /sys/class/net/$D/mtu")
-    PORT_HOST_MTU[$P]=$(cat /sys/class/net/$(tap $P)/mtu)
-    ip addr replace $(host_ip $P)/24 dev $(tap $P)
-    ip link set $(tap $P) up
-    g "ip link set $D up && ip addr replace $(guest_ip $P)/24 dev $D" || true
-    port_wait_carrier $P 1 30
-    check_eq "port $P link ($D)" "$(port_carrier $P)" 1
-    local T=$SECONDS
-    until [[ $(guest_ping $P 1) == *" 1 received"* ]]; do
-        [ $((SECONDS - T)) -lt 60 ] || break
-    done
-    check "port $P first traffic" "$((SECONDS - T)) s" "^([0-9]|[1-5][0-9]) s$"
-}
-
-# port_down <port>: undo port_up (address, MTU, link state; host tap too).
-port_down() {
-    local P=$1 D=${PORT_DEV[$1]}
-    [ -n "$D" ] || return 0
-    unset "PORT_DEV[$P]"
-    g "ip addr del $(guest_ip $P)/24 dev $D 2> /dev/null; ip link set $D mtu ${PORT_MTU[$P]}" || true
-    [ "${PORT_WAS_UP[$P]}" = 1 ] || g "ip link set $D down" || true
-    ip addr del $(host_ip $P)/24 dev $(tap $P) 2> /dev/null || true
-    ip link set $(tap $P) mtu ${PORT_HOST_MTU[$P]} || true
-}
-
-# port_carrier <port>: 1, 0, or none (link down: carrier unreadable).
-port_carrier() {
-    g "cat /sys/class/net/${PORT_DEV[$1]}/carrier 2> /dev/null" || echo none
-}
-
-# port_wait_carrier <port> <want> <seconds>
-port_wait_carrier() {
-    local I
-    for I in $(seq $3); do
-        [ "$(port_carrier $1)" = "$2" ] && return 0
-        sleep 1
-    done
-    return 0
-}
-
-# guest_ping / host_ping <port> <count> [ping args]: the "packets transmitted" line.
-# -n: no reverse DNS. Guest: Simics virtual time runs ~30x slower than wall time
-# here, a 1 s ping interval costs ~30 s: short interval and wait on the guest.
-guest_ping() {
-    g "ping -n -c $2 -i 0.05 -W 1 -I ${PORT_DEV[$1]} ${*:3} $(host_ip $1)" 2>&1 | grep transmitted || true
-}
-host_ping() {
-    ping -n -c $2 -W 3 -I $(tap $1) "${@:3}" $(guest_ip $1) 2>&1 | grep transmitted || true
-}
-
-# --- Loopback: two guest ports wired together on the host ---------------------
-# Host: bridge LOOP_BR with cnic_tap_0_A + cnic_tap_0_B = a cable A <-> B.
-# Guest: port B's netdev in netns LOOP_NS (else the kernel short-cuts traffic
-# between two local addresses); A = LOOP_IP_A (init ns), B = LOOP_IP_B (LOOP_NS).
-# Like kernel selftests: local side + remote side in a netns.
+# --- Loopback: the traffic setup of all tests -------------------------------
+# Two guest ports wired back to back, like kernel selftests (local + remote in a netns):
+#   host:  bridge LOOP_BR with cnic_tap_0_A + cnic_tap_0_B = a cable A <-> B
+#   guest: A = LOOP_DEV_A, LOOP_IP_A in the init ns  -> run with g  "<cmd>"
+#          B = LOOP_DEV_B, LOOP_IP_B in netns LOOP_NS -> run with gb "<cmd>"
+#          (B in a netns: else the kernel short-cuts traffic between two local addresses)
+# loop_up A B ... loop_down. One loopback at a time; restored on any exit.
 LOOP_BR=kdev-loop
 LOOP_NS=kdev-peer
 LOOP_IP_A=10.99.0.1
@@ -167,15 +90,28 @@ LOOP_A=""
 LOOP_B=""
 LOOP_DEV_A=""
 LOOP_DEV_B=""
+declare -A LOOP_SAVE
 
-# gb <cmd>: run a command on the guest inside LOOP_NS (port B side).
+# Any exit (finish, ABORT, Ctrl-C) restores the loopback.
+trap loop_down EXIT
+
+# gb <cmd>: run a command on the guest inside LOOP_NS (port B side). No ' in <cmd>.
 gb() {
     g "ip netns exec $LOOP_NS sh -c '$*'"
 }
 
-# loop_up <portA> <portB>: set up the loopback; return 1 (FAIL printed) if not possible.
+# pair_split <A:B> -> "A B" (default 0:1).
+pair_split() {
+    local P=${1:-0:1}
+    echo "${P%%:*} ${P#*:}"
+}
+
+# loop_up <portA> <portB>: set up the loopback, wait for both links and the first
+# reply (up to 60 s: the first up after boot is slow). Return 1 (FAIL printed) if
+# a port or tap is in someone's bridge (e.g. set-multi.sh: never touched).
 loop_up() {
-    local P D M
+    local P D M T
+    loop_down
     for P in $1 $2; do
         D=$(guest_dev $P)
         M=$( [ -n "$D" ] && g "ip -o link show dev $D" | grep -oP ' master \K\S+' || true)
@@ -185,7 +121,7 @@ loop_up() {
             return 1
         fi
         M=$(ip -o link show dev $(tap $P) | grep -oP ' master \K\S+' || true)
-        if [ -n "$M" ] && [ "$M" != $LOOP_BR ]; then
+        if [ -n "$M" ]; then
             echo "FAIL loop tap $(tap $P) free (in $M, not touched)"
             FAILS=$((FAILS + 1))
             return 1
@@ -196,8 +132,18 @@ loop_up() {
     LOOP_DEV_A=$(guest_dev $1)
     LOOP_DEV_B=$(guest_dev $2)
 
+    # Save what we change: guest MTU + up state, host tap MTU + IPv4 addresses.
+    for P in A B; do
+        D=LOOP_DEV_$P
+        LOOP_SAVE[mtu$P]=$(g "cat /sys/class/net/${!D}/mtu")
+        LOOP_SAVE[up$P]=$(g "ip -o link show dev ${!D}" | grep -c '[<,]UP[,>]' || true)
+        T=$(tap $(eval echo \$LOOP_$P))
+        LOOP_SAVE[tmtu$P]=$(cat /sys/class/net/$T/mtu)
+        LOOP_SAVE[taddr$P]=$(ip -o -4 addr show dev $T | awk '{print $4}' | tr '\n' ' ')
+    done
+
     # Host cable. No STP, no forward delay: forwards at once.
-    ip link show $LOOP_BR > /dev/null 2>&1 || ip link add $LOOP_BR type bridge stp_state 0 forward_delay 0
+    ip link add $LOOP_BR type bridge stp_state 0 forward_delay 0
     for P in $1 $2; do
         ip addr flush dev $(tap $P)
         ip link set $(tap $P) master $LOOP_BR
@@ -211,15 +157,53 @@ loop_up() {
        ip -n $LOOP_NS addr replace $LOOP_IP_B/24 dev $LOOP_DEV_B
        ip -n $LOOP_NS link set $LOOP_DEV_B up; ip -n $LOOP_NS link set lo up" || true
 
+    loop_wait_carrier 1 30
+    check_eq "loop port $1 link ($LOOP_DEV_A)" "$(loop_carrier a)" 1
+    check_eq "loop port $2 link ($LOOP_DEV_B in $LOOP_NS)" "$(loop_carrier b)" 1
+    loop_first_traffic
+}
+
+# loop_down: undo loop_up (guest dev B back to the init ns, addresses, MTU,
+# link state; host taps out of the bridge, their MTU + addresses; bridge gone).
+loop_down() {
+    [ -n "$LOOP_A" ] || return 0
+    local P T A
+    g "ip -n $LOOP_NS link set $LOOP_DEV_B netns 1 2> /dev/null; ip netns del $LOOP_NS 2> /dev/null
+       ip addr del $LOOP_IP_A/24 dev $LOOP_DEV_A 2> /dev/null; ip addr del $LOOP_IP_B/24 dev $LOOP_DEV_B 2> /dev/null
+       ip link set $LOOP_DEV_A mtu ${LOOP_SAVE[mtuA]}; ip link set $LOOP_DEV_B mtu ${LOOP_SAVE[mtuB]}" || true
+    [ "${LOOP_SAVE[upA]}" = 1 ] || g "ip link set $LOOP_DEV_A down" || true
+    [ "${LOOP_SAVE[upB]}" = 1 ] || g "ip link set $LOOP_DEV_B down" || true
+    for P in A B; do
+        T=$(tap $(eval echo \$LOOP_$P))
+        ip link set $T nomaster 2> /dev/null || true
+        ip link set $T mtu ${LOOP_SAVE[tmtu$P]} 2> /dev/null || true
+        for A in ${LOOP_SAVE[taddr$P]}; do ip addr add $A dev $T 2> /dev/null || true; done
+    done
+    ip link del $LOOP_BR 2> /dev/null || true
+    LOOP_A=""
+}
+
+# loop_carrier <a|b>: 1, 0, or none (link down: carrier unreadable).
+loop_carrier() {
+    if [ $1 = a ]; then
+        g "cat /sys/class/net/$LOOP_DEV_A/carrier 2> /dev/null" || echo none
+    else
+        gb "cat /sys/class/net/$LOOP_DEV_B/carrier 2> /dev/null" || echo none
+    fi
+}
+
+# loop_wait_carrier <want> <seconds>: both sides.
+loop_wait_carrier() {
     local I
-    for I in $(seq 30); do
-        [ "$(g "cat /sys/class/net/$LOOP_DEV_A/carrier" 2> /dev/null)" = 1 ] &&
-            [ "$(gb "cat /sys/class/net/$LOOP_DEV_B/carrier" 2> /dev/null)" = 1 ] && break
+    for I in $(seq $2); do
+        [ "$(loop_carrier a)" = $1 ] && [ "$(loop_carrier b)" = $1 ] && return 0
         sleep 1
     done
-    check_eq "loop port $1 link ($LOOP_DEV_A)" "$(g "cat /sys/class/net/$LOOP_DEV_A/carrier" 2> /dev/null || echo none)" 1
-    check_eq "loop port $2 link ($LOOP_DEV_B in $LOOP_NS)" "$(gb "cat /sys/class/net/$LOOP_DEV_B/carrier" 2> /dev/null || echo none)" 1
-    # First traffic after link up can be slow (see port_up).
+    return 0
+}
+
+# loop_first_traffic: wait up to 60 s for one A -> B reply (also after a link or MTU change).
+loop_first_traffic() {
     local T=$SECONDS
     until [[ $(loop_ping_ab 1) == *" 1 received"* ]]; do
         [ $((SECONDS - T)) -lt 60 ] || break
@@ -227,20 +211,17 @@ loop_up() {
     check "loop first traffic" "$((SECONDS - T)) s" "^([0-9]|[1-5][0-9]) s$"
 }
 
-# loop_down: guest dev back to the init ns (addresses removed, down), netns gone,
-# host taps out of the bridge, bridge gone.
-loop_down() {
-    [ -n "$LOOP_A" ] || return 0
-    g "ip -n $LOOP_NS link set $LOOP_DEV_B netns 1 2> /dev/null; ip netns del $LOOP_NS 2> /dev/null
-       ip addr del $LOOP_IP_A/24 dev $LOOP_DEV_A 2> /dev/null; ip addr flush dev $LOOP_DEV_B
-       ip link set $LOOP_DEV_A down; ip link set $LOOP_DEV_B down" || true
-    local P
-    for P in $LOOP_A $LOOP_B; do ip link set $(tap $P) nomaster 2> /dev/null || true; done
-    ip link del $LOOP_BR 2> /dev/null || true
-    LOOP_A=""
+# loop_mtu <mtu>: MTU on both guest netdevs and both host taps (the bridge follows).
+# Prints the guest errors (if refused); loop_down restores.
+loop_mtu() {
+    ip link set $(tap $LOOP_A) mtu $1
+    ip link set $(tap $LOOP_B) mtu $1
+    g "ip link set $LOOP_DEV_A mtu $1; ip -n $LOOP_NS link set $LOOP_DEV_B mtu $1" 2>&1 || true
 }
 
 # loop_ping_ab / loop_ping_ba <count> [ping args]: A -> B / B -> A, "transmitted" line.
+# -n: no reverse DNS. Simics guest time runs ~30x slower than wall time: a 1 s
+# ping interval costs ~30 s, so short interval and wait.
 loop_ping_ab() {
     g "ping -n -c $1 -i 0.05 -W 1 -I $LOOP_DEV_A ${*:2} $LOOP_IP_B" 2>&1 | grep transmitted || true
 }

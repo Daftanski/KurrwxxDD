@@ -24,6 +24,13 @@ for I in $(seq $N); do
         sleep 5
     done
     check_eq "cycle $I physical ports" "$PORTS" 8
+    if [ "$PORTS" != 8 ]; then
+        # Hung probe: where the blocked (D) tasks wait, top 4 frames each, once per place.
+        echo "INFO blocked tasks:"
+        g 'for P in $(ps -eo pid,stat | awk "\$2 ~ /D/ {print \$1}"); do
+               echo "  $(cat /proc/$P/comm): $(head -4 /proc/$P/stack | sed "s/.*\] //; s/+0x.*//" | tr "\n" " ")"
+           done | sort | uniq -c | head -10' || true
+    fi
 
     if "$(dirname "$0")/ixd.sh" > /tmp/reload-ixd.log; then :; else FAILS=$((FAILS + 1)); fi
     sed -n -e "s/^\(PASS\|FAIL\) /\1 cycle $I ixd: /p" -e '/^\[/p' /tmp/reload-ixd.log

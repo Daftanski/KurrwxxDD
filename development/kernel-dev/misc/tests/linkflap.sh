@@ -1,26 +1,25 @@
 #!/bin/bash
-# Usage: linkflap.sh [port] [n]   Guest ip link down/up n times (default port 0, 5): carrier back each time, then ping both ways. Needs: ixd.sh done, port not in a bridge. Changes: port (restored). Time: ~15 s + 10 s/flap.
+# Usage: linkflap.sh [A:B] [n]   Loopback pair (default 0:1, 5): ip link down/up of port A n times, carrier back each time, then ping A->B and B->A. Needs: ixd.sh done, ports not in a bridge. Changes: ports, host taps (restored). Time: ~30 s + 10 s/flap.
 . "$(dirname "$0")/../lib.sh"
-P=${1:-0}
+read -r A B <<< "$(pair_split $1)"
 N=${2:-5}
 guest_need
 dmesg_mark
-port_up $P || finish
-D=${PORT_DEV[$P]}
+loop_up $A $B || finish
 
 for I in $(seq $N); do
-    g "ip link set $D down"
-    check_eq "port $P flap $I down" "$(g "cat /sys/class/net/$D/operstate")" down
-    g "ip link set $D up"
-    port_wait_carrier $P 1 30
-    check_eq "port $P flap $I up" "$(port_carrier $P)" 1
+    g "ip link set $LOOP_DEV_A down"
+    check_eq "port $A flap $I down" "$(g "cat /sys/class/net/$LOOP_DEV_A/operstate")" down
+    g "ip link set $LOOP_DEV_A up"
+    loop_wait_carrier 1 30
+    check_eq "port $A flap $I up" "$(loop_carrier a)" 1
 done
 
-# Addresses stay over down/up; first ping may be lost to ARP.
-guest_ping $P 1 > /dev/null
-check "port $P guest->host" "$(guest_ping $P 5)" " [345] received"
-check "port $P host->guest" "$(host_ping $P 5)" " [345] received"
+# Addresses stay over down/up.
+loop_first_traffic
+check "port $A -> port $B" "$(loop_ping_ab 10)" " (10|9) received"
+check "port $B -> port $A" "$(loop_ping_ba 10)" " (10|9) received"
 
-port_down $P
+loop_down
 check_dmesg "dmesg clean"
 finish

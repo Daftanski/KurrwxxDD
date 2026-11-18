@@ -8,7 +8,7 @@
 HERE=$(dirname "$(readlink -f "$0")")
 DEV=/root/SimicsWorkspace/development/kernel-dev
 ALL="restart boot ixd ping"
-NET="large mtu linkflap stats loopback"
+NET="large mtu linkflap stats"
 DRIVER="sf reload"
 
 if [ "$1" = list ]; then
