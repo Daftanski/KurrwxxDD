@@ -29,8 +29,13 @@ ALL_PAIRS="0:1 2:3 4:5 6:7"
 # all-nodes multicast, then take the IPv4/IPv6 neighbours with that MAC.
 # Guest disk is fresh each boot: host key changes, root needs no password.
 SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
-# One shared connection (a guest ssh login takes seconds); dies 15 s after the guest.
-SSH_OPTS+=" -o ControlMaster=auto -o ControlPath=/tmp/kdev-ssh-%C -o ControlPersist=60 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+SSH_OPTS+=" -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
+# One shared connection (a guest ssh login takes seconds), started only by
+# guest_find, outside $(...): a master made inside $(...) keeps its pipe open
+# (ssh daemonizes with the fds), so the call would hang. Calls never become the
+# master; without it they connect directly.
+SSH_MUX="-o ControlPath=/tmp/kdev-ssh-%C"
+SSH_OPTS+=" $SSH_MUX -o ControlMaster=no"
 BRIDGE=sim_br0
 
 # Host's own launch script: core/launch-simics.sh copies it with the MAC unchanged.
@@ -48,6 +53,9 @@ guest_find() {
              $(ip -6 neigh show dev $BRIDGE | grep -i "lladdr $MAC" | grep '^fe80' | cut -d' ' -f1 | sed "s/\$/%$BRIDGE/"); do
         if timeout 20 ssh $SSH_OPTS root@$A true 2> /dev/null; then
             GUEST=$A
+            ssh $SSH_MUX -O check root@$A > /dev/null 2>&1 ||
+                ssh ${SSH_OPTS% -o ControlMaster=no} -o ControlMaster=yes -o ControlPersist=120 -fN root@$A \
+                    < /dev/null > /dev/null 2>&1 || true
             return 0
         fi
     done
@@ -59,6 +67,14 @@ guest_find() {
 g() {
     [ -n "$GUEST" ] || guest_find || { echo "guest not reachable (MAC $(guest_mac || true))" >&2; return 1; }
     ssh $SSH_OPTS root@$GUEST "$@"
+}
+
+# gt <seconds> <cmd>: g with a wall-clock limit (exit 124 on timeout). Own
+# connection: via the shared one the master keeps our stdout until the guest
+# command ends (minutes on a hung guest). First -o value wins in ssh.
+gt() {
+    [ -n "$GUEST" ] || guest_find || return 1
+    timeout $1 ssh -o ControlPath=none $SSH_OPTS root@$GUEST "${@:2}"
 }
 
 # guest_need: find the guest or FAIL the test.
@@ -217,10 +233,22 @@ loop_wait_carrier() {
 # loop_first_traffic: wait up to 60 s for one A -> B reply (also after a link or MTU change).
 loop_first_traffic() {
     local T=$SECONDS
-    until [[ $(loop_ping_ab 1) == *" 1 received"* ]]; do
+    # gt: a dead port must not stretch one try (slow guest time).
+    until [[ $(gt 20 "ping -n -c 1 -W 1 -I $LOOP_DEV_A $LOOP_IP_B" 2>&1) == *" 1 received"* ]]; do
         [ $((SECONDS - T)) -lt 60 ] || break
     done
     check "loop first traffic" "$((SECONDS - T)) s" "^([0-9]|[1-5][0-9]) s$"
+}
+
+# loop_wait_dad [seconds]: wait until no IPv6 address on A or B is tentative
+# (DAD ~1 s guest time = ~30 s wall; packets to a tentative address are dropped).
+loop_wait_dad() {
+    local I
+    for I in $(seq ${1:-90}); do
+        [ -z "$(g "ip -6 addr show dev $LOOP_DEV_A tentative")$(gb "ip -6 addr show dev $LOOP_DEV_B tentative")" ] && return 0
+        sleep 1
+    done
+    return 0
 }
 
 # loop_mtu <mtu>: MTU on both guest netdevs and both host taps (the bridge follows).

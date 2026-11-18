@@ -31,6 +31,10 @@
      ping interval of 1 s costs ~30 s. Guest pings use -i 0.05 -W 1 (lib.sh).
    - VSI HW counters (ethtool rx/tx-unicast_pkts, ip -s link) stay 0; per-queue
      rx/tx_q-*_pkts work. stats.sh: VSI = INFO, HWSTATS=1 makes them checks.
+   - IPv6: addresses stay "tentative" (DAD) ~30 s wall after link up; packets
+     to them are dropped. loop_wait_dad before IPv6 traffic.
+   - A hung guest (driver probe holding rtnl) blocks guest commands for
+     minutes: use gt <seconds> "<cmd>" where a test must not wait.
    - First traffic after the first link up since boot can be slow: loop_up waits
      up to 60 s for a reply and reports the time ("first traffic").
    - Some kernel messages print once per boot (DO_ONCE, e.g. "hw csum failure"):
@@ -68,6 +72,16 @@
       frames, also with the group joined (ip maddr add) or ALLMULTI on.
       Driver does not program a multicast/allmulti rx rule (only "SEM rx rule
       match port forward to vsi" in dmesg)? allmulti.sh, not in a suite.
+      Effect: IPv6 neighbour discovery fails (multicast), IPv6 traffic only
+      with static neighbours (ntuple.sh does that).
+   F5 2026-11-18 LAVA jobs 17-19 (CI kernel, PFP, port 0 = PF0): PCI function
+      reset (sysfs device/reset) -> "idpf.eth ixd.eth.N: Failed to enable vport
+      0: -110", WARNING in devl_port_unregister (net/devlink/port.c:1134) +
+      Call Trace, "idpf_eth_probe() failed"; port has link but no traffic until
+      restart. ixd has no pci_error_handlers (reset_prepare / reset_done).
+      pfreset.sh, not in a suite, run it last (port stays dead).
+   F6 2026-11-18 ethtool -N flow-type ip4 (IPV4_USER_FLOW) -> EOPNOTSUPP,
+      ip6 works: sideband flow type not enabled for ip4? ntuple.sh (INFO).
    F2 reproducible since job 14: allmulti.sh, port 1 (eth3) when loop_down
       moves it back from the netns (queues disabled): "Failed to receive
       marker packets".

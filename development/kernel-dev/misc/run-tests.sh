@@ -10,15 +10,15 @@ DEV=/root/SimicsWorkspace/development/kernel-dev
 ALL="restart boot ixd ping"
 NET="large mtu linkflap stats"
 DRIVER="sf reload"
-# Ported from BATS. Not in a suite: allmulti (FAILs on finding F4).
-FEAT="vlan queues rss"
+# Ported from BATS. Not in a suite: allmulti (F4), pfreset (F5, kills port A until restart).
+FEAT="vlan queues rss coalesce ntuple speed"
 
 if [ "$1" = list ]; then
     for F in "$HERE"/tests/*.sh; do
         sed -n '2s/^# Usage: //p' "$F"
     done
     echo "steps: restart (~0, boot waits) | install (kernel from update-simics-kernel.sh + restart, ~3 min) | name:arg,arg"
-    echo "suites: all = $ALL (~6 min) | net = $NET | feat = $FEAT | driver = $DRIVER | full = all net feat driver (~8 min) | not in a suite: allmulti (F4)"
+    echo "suites: all = $ALL (~6 min) | net = $NET | feat = $FEAT | driver = $DRIVER | full = all net feat driver (~8 min) | not in a suite: allmulti (F4), pfreset (F5, run last)"
     exit 0
 fi
 
