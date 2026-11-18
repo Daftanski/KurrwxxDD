@@ -24,7 +24,8 @@ Hidden agent memory holds NO facts. Everything is here or in .notes/.
   `WORKSPACE=$PWD TARGET=RELEASE BUILD_TOOLS_PRECONFIGURED=1 BUILD_INCREMENTAL=1 EXTERNAL_SOURCES_ALLOWED=1 bash -c 'set --; source Scripts/Cnic/build_cnic.sh'` -> `EFIx64/E4999X10.EFI`.
 - `EXEC_CNIC_BUILD.sh <ip>` = build + deploy + restart. `TARGET=DEBUG` for serial debug prints.
 - Test scope: unit tests + only the targeted Simics test. Full suite ONLY when the user asks.
-- Simics tests run ONLY through LAVA (`~/lava/svl/submit.sh`, `results.sh --wait`). Never run run-tests.sh on a host by hand. Missing LAVA support for a test = add it first (`development/doc/lava/`).
+- uefi-dev Simics tests run ONLY through LAVA (`~/lava/svl/submit.sh`, `results.sh --wait`). Never run its run-tests.sh on a host by hand. Missing LAVA support for a test = add it first (`development/doc/lava/`).
+- kernel-dev tests: NO LAVA (user choice). Run by hand: `ssh root@<ip> /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh [restart|boot|ixd|ping|all]`. Restart kills Simics: check the host is free first (`who`, guest sessions).
 - Repo rules (nic-core): files are CRLF (check: lines == CR count before commit). Never commit: SharedNssip submodule, NicCorePkg/Include/Version.h (restore after builds), EXEC_CNIC_BUILD.sh, Build/, EFIx64/.
 
 ## Simics hosts
@@ -32,7 +33,8 @@ Hidden agent memory holds NO facts. Everything is here or in .notes/.
 - One job per host. How to work: `development/doc/simics/` (start: 01-overview.txt).
 
 ## Linux kernel / ixd
-- `development/doc/simics/02-linux.txt`.
+- `development/doc/simics/02-linux.txt`. Tests: `development/kernel-dev/misc/readme.txt`.
+- Kernel tree: `/home/mswiatko/kernels/os.linux.kernel.net-next`. Deploy: `update-simics-kernel.sh <ip>` run from it.
 
 ## UEFI driver
 - `development/doc/simics/03-uefi.txt`. Not in suites: snpstate, snpdamage, txfill -> run `restart load <test>`.

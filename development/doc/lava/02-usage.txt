@@ -56,4 +56,5 @@ Related: 01-overview.txt, 03-maintenance.txt
 
 5. Open
 -------
-- No Linux (kernel-dev) job yet.
+- No Linux (kernel-dev) job: kernel-dev tests run by hand
+  (development/kernel-dev/misc/readme.txt).

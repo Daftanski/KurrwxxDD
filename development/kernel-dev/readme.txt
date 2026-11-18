@@ -3,6 +3,7 @@
 ## Folders
 
    core/   - image tools and Simics restart (runs on the Simics host)
+   misc/   - tests (see misc/readme.txt), sf-toggle-trace.sh (guest)
    image/  - created at run time: dev disk image (.wic, .craff), kernel output
    logs/   - created at run time
 

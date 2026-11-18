@@ -14,13 +14,19 @@ IPs:     ../../../config.txt only
   installs bzImage + modules into the dev disk image, restarts
   Simics.
 - "modprobe: FATAL: Module loop not found" on some hosts: harmless.
+- Tests (by hand, no LAVA): ssh root@<host ip>
+    /root/SimicsWorkspace/development/kernel-dev/misc/run-tests.sh
+  [restart|boot|ixd|ping|all]. development/kernel-dev/misc/readme.txt.
+- PFD/PFP: PFP=TRUE|FALSE for core/restart.sh; unset = host's own
+  $pfp line in startup_scripts/vpc_launch.simics.
 
 2. Guest facts
 --------------
 - Login root. Boot ~5 min.
-- eth0 bridged to the lab LAN (sim_tap1 -> sim_br0), IP by DHCP:
-    grep -a "eth0: leased" /root/SimicsWorkspace/*.log
-  Guest MAC = first MAC in /root/SimicsWorkspace/vm1.sh.
+- eth0 bridged to the lab LAN (sim_tap1 -> sim_br0), IP by DHCP. No
+  lease log on the host: find it by MAC ($i210_mac in the launch
+  script): ip neigh show dev sim_br0 | grep <mac>
+  (misc/lib.sh guest_find does this).
 - Disk NOT persistent: files copied to the guest are lost on
   restart. Never use vm1.sh (boots the CI image, not ours).
 - ssh keys change: ssh-keygen -R <ip>, then

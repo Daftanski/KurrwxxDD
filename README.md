@@ -22,9 +22,10 @@ Simics setups (UEFI, Linux), a test framework, and a LAVA scheduler for automate
    `development/setup-uefi-dev.sh <ip>` (UEFI) or `development/setup-kernel-dev.sh <ip>` (Linux).
    Both install your ssh key (the host password is asked once).
    Then `development/lava/add-device.sh <n>` registers the host in LAVA.
-4. Run tests through LAVA: `development/doc/lava/02-usage.txt`.
+4. Run tests: UEFI through LAVA (`development/doc/lava/02-usage.txt`); Linux by hand over ssh
+   (`development/kernel-dev/misc/readme.txt`).
 
 ## Rules
 
 - No IPs, passwords or tokens in committed files. Hosts live in `config.txt`, secrets in `~/lava`.
-- Simics tests run only through LAVA, one job per host.
+- UEFI Simics tests run only through LAVA, one job per host. kernel-dev tests run by hand (no LAVA).

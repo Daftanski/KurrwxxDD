@@ -14,7 +14,9 @@ rm -rf $OUT
 mkdir -p $OUT
 tar xzf $DEV/image/kernel_output.tar.gz -C $OUT
 # Read from bzImage; lib/modules may hold stale dirs from earlier builds.
-RELEASE=$(file $OUT/arch/x86/boot/bzImage | grep -oP 'version \K\S+')
+# "6.18.1+ (user@host) #3 SMP PREEMPT_DYNAMIC <date>"
+FULL=$(file $OUT/arch/x86/boot/bzImage | grep -oP 'version \K[^,]+')
+RELEASE=${FULL%% *}
 
 # --- Step 2: copy kernel + modules into the image ----------------------------
 $DEV/core/mount-image.sh
@@ -26,4 +28,6 @@ $DEV/core/umount-image.sh
 # --- Step 3: repack the .craff Simics boots from -----------------------------
 rm -f $CRAFF
 $CRAFF_TOOL -o $CRAFF $WIC
+# misc/tests/boot.sh compares this with uname -r / uname -v of the guest.
+printf '%s\n%s\n' "$RELEASE" "#${FULL#*#}" > $DEV/image/kernel-version
 echo "Installed kernel $RELEASE"

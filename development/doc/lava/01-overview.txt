@@ -48,6 +48,7 @@ only in ~/lava.
 - uefi-dev: misc/lava-run.sh = run-tests.sh + one LAVA test case per
   step (<nn>-<step>) and per check (<nn>-<step>.<check>). Deployed
   with setup-uefi-dev.sh.
-- kernel-dev: no runner yet. A new setup needs its own
-  misc/lava-run.sh with the same output rule (PASS/FAIL lines,
-  "== <step>", "== failed: <list>").
+- kernel-dev: no LAVA (by choice). Tests run by hand over ssh:
+  development/kernel-dev/misc/readme.txt. Same output rule as above
+  (PASS/FAIL lines, "== <step>", "== failed: <list>"), so a
+  lava-run.sh can be added later (copy of the uefi-dev one).
