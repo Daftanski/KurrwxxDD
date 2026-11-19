@@ -298,6 +298,11 @@ gcap_stop() {
     g "$CMD" 2> /dev/null | tr '\n' ' ' | sed 's/ $//' || true
 }
 
+# gcap_lines <id>: the captured lines (after gcap_stop).
+gcap_lines() {
+    g "cat /tmp/kdev-$1.txt" 2> /dev/null || true
+}
+
 # Host packet capture: hcap_start <tap> <filter>; send; hcap_stop -> count.
 hcap_start() {
     tcpdump -l -n -i $1 $2 > /tmp/kdev-hcap.txt 2> /dev/null &

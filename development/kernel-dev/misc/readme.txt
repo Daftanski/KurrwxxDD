@@ -95,9 +95,23 @@
       marker packets".
    F2 is a known finding in check_dmesg (DMESG_KNOWN in lib.sh): INFO, not
       FAIL; STRICT=1 makes it FAIL again.
-   Bridge offload (bridge.sh, LAVA job 25): works. sf0<->sf1, lp->sf0,
-      sf0->lp: FDB entries "extern_learn offload", 2nd burst 0 ICMP on the
-      uplink / representors, sf<->sf not on the wire.
+   Bridge offload (bridge.sh, LAVA jobs 25, 31): works for short bursts.
+      sf0<->sf1, lp->sf0, sf0->lp: FDB entries "extern_learn offload", a 2nd
+      burst has 0 ICMP on the uplink / representors, sf<->sf not on the wire.
+      Learning window (slow path until the flow is installed): seq 1-2 in
+      jobs 31/32, seq 1-10 in job 33 (lp->sf0, 20 pps guest): varies.
+   F7 2026-11-18 bridge offload, entries in use age out (bridge.sh case age,
+      LAVA jobs 32, 33, ageing_time 3 s, lp->sf0 200 pings): slow path again
+      every ageing period: job 32 seq 41, 83, 123, 160 (1 packet each); job 33
+      replies 48-59, requests 63-67, replies 106-122 (windows up to 17).
+      Cause: libie_br_fdb_entry_create sets last_use once
+      (libie/eswitch/bridge.c ~510), nothing refreshes it; ixd_esw_br_update
+      (ixd/eswitch/bridge.c ~283) deletes every entry older than ageing_time
+      (default 300 s guest) even with traffic. Windows grow because the bridge
+      relearns a MAC only from slow-path packets: SF entry gone + LP entry
+      still offloaded -> LP->SF requests flood via the slow path, SF replies
+      stay offloaded, SF MAC is not relearned until the LP entry ages too.
+      User saw "lp->sf not all offloaded" in manual tests: matches.
    F1/F2 stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
 ## Traffic model: loopback (all traffic tests)
