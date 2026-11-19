@@ -123,9 +123,13 @@ lib_exit() {
 # Any exit (finish, ABORT, Ctrl-C) runs the hooks and restores the loopback.
 trap lib_exit EXIT
 
+# gn <netns> <cmd>: run a command on the guest inside a netns. No ' in <cmd>.
+gn() {
+    g "ip netns exec $1 sh -c '${*:2}'"
+}
 # gb <cmd>: run a command on the guest inside LOOP_NS (port B side). No ' in <cmd>.
 gb() {
-    g "ip netns exec $LOOP_NS sh -c '$*'"
+    gn $LOOP_NS "$@"
 }
 
 # pair_split <A:B> -> "A B" (default 0:1).
@@ -274,18 +278,24 @@ tap_rx() {
     cat /sys/class/net/$(tap $1)/statistics/rx_packets
 }
 
-# Guest packet capture on side A, no promiscuous mode (-p): counts what the
-# device lets up to the stack. gcap_start <dev> <filter>; send; gcap_stop -> count.
+# Guest packet capture, no promiscuous mode (-p): counts what the device lets
+# up to the stack. gcap_start <dev> <filter> [id]; send; gcap_stop [id ...] ->
+# counts (space separated, same order). Several captures at once: one id each.
 # setsid + all fds redirected: the background tcpdump must not hold the ssh session.
 gcap_start() {
-    g "rm -f /tmp/kdev-cap.*
-       setsid tcpdump -p -n -l -i $1 $2 < /dev/null > /tmp/kdev-cap.txt 2> /tmp/kdev-cap.err &
-       echo \$! > /tmp/kdev-cap.pid
-       for I in \$(seq 50); do grep -q listening /tmp/kdev-cap.err 2> /dev/null && break; sleep 0.1; done" || true
-    at_exit 'g "kill \$(cat /tmp/kdev-cap.pid 2> /dev/null) 2> /dev/null"'
+    local I=${3:-cap}
+    g "rm -f /tmp/kdev-$I.*
+       setsid tcpdump -p -n -l -i $1 $2 < /dev/null > /tmp/kdev-$I.txt 2> /tmp/kdev-$I.err &
+       echo \$! > /tmp/kdev-$I.pid
+       for K in \$(seq 50); do grep -q listening /tmp/kdev-$I.err 2> /dev/null && break; sleep 0.1; done" || true
+    at_exit "g \"kill \\\$(cat /tmp/kdev-$I.pid 2> /dev/null) 2> /dev/null\""
 }
 gcap_stop() {
-    g "sleep 0.5; kill \$(cat /tmp/kdev-cap.pid); sleep 0.2; grep -c . /tmp/kdev-cap.txt || true" 2> /dev/null || true
+    local I CMD="sleep 0.5"
+    for I in ${@:-cap}; do CMD+="; kill \$(cat /tmp/kdev-$I.pid) 2> /dev/null"; done
+    CMD+="; sleep 0.2"
+    for I in ${@:-cap}; do CMD+="; echo \$(grep -c . /tmp/kdev-$I.txt)"; done
+    g "$CMD" 2> /dev/null | tr '\n' ' ' | sed 's/ $//' || true
 }
 
 # Host packet capture: hcap_start <tap> <filter>; send; hcap_stop -> count.
@@ -302,6 +312,44 @@ hcap_stop() {
     grep -c . /tmp/kdev-hcap.txt || true
 }
 
+# --- SFs (subfunctions) ----------------------------------------------------
+# sf_add <pci> <sfnum>: add + activate an SF on PF <pci> (eswitch switchdev).
+# Sets SF_PORT (devlink port), SF_REPR (representor), SF_DEV (SF netdev, init
+# ns). Removed on any exit (at_exit). Return 1 (FAIL printed) on error.
+# sf.sh checks every step of this one by one.
+sf_add() {
+    local OUT NET0 S
+    SF_PORT=""
+    SF_REPR=""
+    SF_DEV=""
+    NET0=$(g "ls /sys/class/net" | tr '\n' ' ')
+    OUT=$(g "devlink port add pci/$1 flavour pcisf pfnum ${1##*.} sfnum $2 2>&1" || true)
+    SF_PORT=$(head -1 <<< "$OUT" | grep -oP '^pci/\S+(?=:)' || true)
+    SF_REPR=$(head -1 <<< "$OUT" | grep -oP ' netdev \K\S+' || true)
+    if [ -z "$SF_PORT" ] || [ -z "$SF_REPR" ]; then
+        echo "FAIL sf $2 add ($(tr '\n' ' ' <<< "$OUT"))"
+        FAILS=$((FAILS + 1))
+        return 1
+    fi
+    at_exit "g \"devlink port function set $SF_PORT state inactive 2> /dev/null; devlink port del $SF_PORT 2> /dev/null\""
+    g "devlink port function set $SF_PORT state active" || true
+    for S in $(seq 60); do
+        SF_DEV=$(g "ls /sys/class/net" | grep -vxF -e "$SF_REPR" $(printf -- '-e %s ' $NET0) | head -1 || true)
+        [ -n "$SF_DEV" ] && break
+        sleep 1
+    done
+    if [ -z "$SF_DEV" ]; then
+        echo "FAIL sf $2 netdev (none after 60 s, $(g "devlink port show $SF_PORT" | grep -oE 'state \S+ opstate \S+' || true))"
+        FAILS=$((FAILS + 1))
+        return 1
+    fi
+}
+
+# pci_of <netdev>: PCI function (BDF) of a guest netdev (PF; PFD: through the aux device).
+pci_of() {
+    g "readlink -f /sys/class/net/$1/device" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]' | tail -1
+}
+
 # --- dmesg -------------------------------------------------------------------
 # Space before BUG/WARNING: not "EDAC DEBUG:".
 DMESG_OOPS=' (BUG|WARNING): |Oops|Call Trace|general protection'
@@ -314,15 +362,23 @@ dmesg_mark() {
     DMESG_TAG="kdev-mark-$NAME-$$-$RANDOM"
     g "echo $DMESG_TAG > /dev/kmsg"
 }
+# Known findings (readme "Findings"): reported as INFO, not FAIL. STRICT=1: FAIL.
+# F2 = intermittent queue-disable timeout when a netdev is moved/removed.
+DMESG_KNOWN='Failed to receive marker packets'
 # check_dmesg <label> [regex]: no line matches (default: oops or ixd error).
 # Without dmesg_mark: whole dmesg. Marker wrapped out: whole buffer (all newer).
 check_dmesg() {
-    local BAD
+    local BAD KNOWN=""
     BAD=$(g "dmesg" | awk -v t="$DMESG_TAG" '
             t != "" && index($0, t) { n = 0; next }
             { a[++n] = $0 }
             END { for (i = 1; i <= n; i++) print a[i] }' |
           grep -E "${2:-$DMESG_OOPS|$DMESG_IXD}" | head -5 || true)
+    if [ "$STRICT" != 1 ] && [ -n "$BAD" ]; then
+        KNOWN=$(grep -E "$DMESG_KNOWN" <<< "$BAD" || true)
+        BAD=$(grep -vE "$DMESG_KNOWN" <<< "$BAD" || true)
+    fi
+    [ -z "$KNOWN" ] || echo "INFO known finding (STRICT=1 fails): $(tr '\n' ' ' <<< "$KNOWN")"
     check_eq "$1" "$(echo -n "$BAD" | grep -c . || true)" 0
     [ -z "$BAD" ] || echo "$BAD"
 }

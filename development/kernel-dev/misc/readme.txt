@@ -33,6 +33,8 @@
      rx/tx_q-*_pkts work. stats.sh: VSI = INFO, HWSTATS=1 makes them checks.
    - IPv6: addresses stay "tentative" (DAD) ~30 s wall after link up; packets
      to them are dropped. loop_wait_dad before IPv6 traffic.
+   - Several guest captures at once: gcap_start <dev> <filter> <id>,
+     gcap_stop <id ...> (one stop call: each guest sleep costs ~30x).
    - A hung guest (driver probe holding rtnl) blocks guest commands for
      minutes: use gt <seconds> "<cmd>" where a test must not wait.
    - First traffic after the first link up since boot can be slow: loop_up waits
@@ -66,6 +68,12 @@
       base-table entries ... -110": CP mailbox does not answer. reload
       passed in jobs 4, 5 and 9 (after restart): intermittent. Guest stays
       broken: next job needs restart. reload.sh prints the blocked stacks.
+      Reproducer (2026-11-18): bridge.sh then reload.sh hangs 2 of 2 (LAVA jobs
+      26, 27: restart boot sf bridge reload); sf.sh then reload.sh passes (jobs
+      23, 28). Same stacks (ixd_map_pmat, ixd_mod_send_base_table,
+      ixd_vc_dev_init, ixd_req_rx_ptype waiting in libie_ctlq_xn_send). Bridge
+      offload SEM rules / CP state not cleaned on bridge delete or rmmod?
+      Suite driver runs bridge after reload.
    F4 2026-11-18 LAVA job 15 (CI kernel, PFP, loopback 0:1): multicast RX
       does not work. B's frames to 01:00:5e:01:01:01 reach host tap A (10/10),
       the same tcpdump -p on port A sees unicast (10/10), but 0 multicast
@@ -85,6 +93,11 @@
    F2 reproducible since job 14: allmulti.sh, port 1 (eth3) when loop_down
       moves it back from the netns (queues disabled): "Failed to receive
       marker packets".
+   F2 is a known finding in check_dmesg (DMESG_KNOWN in lib.sh): INFO, not
+      FAIL; STRICT=1 makes it FAIL again.
+   Bridge offload (bridge.sh, LAVA job 25): works. sf0<->sf1, lp->sf0,
+      sf0->lp: FDB entries "extern_learn offload", 2nd burst 0 ICMP on the
+      uplink / representors, sf<->sf not on the wire.
    F1/F2 stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
 ## Traffic model: loopback (all traffic tests)

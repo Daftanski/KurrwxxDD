@@ -9,7 +9,8 @@ HERE=$(dirname "$(readlink -f "$0")")
 DEV=/root/SimicsWorkspace/development/kernel-dev
 ALL="restart boot ixd ping"
 NET="large mtu linkflap stats"
-DRIVER="sf reload"
+# bridge after reload: reload after bridge hangs (F3 reproducer).
+DRIVER="sf reload bridge"
 # Ported from BATS. Not in a suite: allmulti (F4), pfreset (F5, kills port A until restart).
 FEAT="vlan queues rss coalesce ntuple speed"
 
