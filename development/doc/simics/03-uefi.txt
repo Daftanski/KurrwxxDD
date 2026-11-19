@@ -50,8 +50,19 @@ IPs:     ../../../config.txt only
   FileNotFoundError in bios_knobs/<hash>/. Cause: Simics cannot
   download the knob tools (progknobs, xmlcli, BpmGen). has-log/
   simics_vm1.log: "'NoneType' object has no attribute
-  'download_artifact'" = Simics Python has no devtools_base package.
-  Artifactory login does not help (files are public).
-  Fix: development/seed-bios-knob-tools.sh <ip> (puts them in
-  SimicsWorkspace/artifactory/simics-repos/pub/tools/).
+  'download_artifact'" = no Infra Tools package (devtools_base).
+  Files are public, but with Infra Tools a login is needed (below).
+  Simics vp20.9.6.0 (Infra Tools 7.10.0):
+  "account None is not authorized to access Artifactory server".
+  Bug in devtools_base/core/config.py get_auth(): no credentials
+  -> returns (None, None), not None, so requests sends
+  "Authorization: Basic None:None" -> 401 Bad credentials.
+  Anonymous GET (curl, plain requests) gives 200.
+  Fix A (tested 2026-11-19): development/setup-artifactory-auth.sh
+  <ip> (setup-uefi-dev.sh runs it), once per host, user types own login (runs
+  bin/infra-tools-config auth artifactory on the host; stored in
+  /root/.config/devtools/config.yaml).
+  Fix B (no login): development/seed-bios-knob-tools.sh <ip>
+  (setup-artifactory-auth.sh runs it on hosts without Infra Tools)
+  (puts them in SimicsWorkspace/artifactory/simics-repos/pub/tools/).
   Check: bios_knobs/<hash>/ must hold *_modified_uefi_dev.bin.
