@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: bridge.sh [A:B] [case ...]   Bridge offload on port A's PF (switchdev): guest bridge = uplink A + representors of 2 SFs (SF netdevs in netns); LP = port B. Cases (default: all but the bug checks age (F7), lp-sf0-warm (F8), static-replace (F9)): from-to[@ping interval], host = Simics host as LP, fresh bridge + ARP each: initiator's 1st burst per device/seq (no ICMP on uplink or representors after seq 3, ARP control), FDB entry of each MAC on its own port (LP on the uplink) + offload right after the burst and after a wait, 2nd burst 0 slow path, sf<->sf not on the host tap; static = entries added by hand (bridge fdb add ... static) offloaded before traffic, 0 slow path from seq 1, survive ageing, deleted from hw too (relearned); static-wrong = sf0's MAC on the uplink (plain static: moved by the bridge; sticky: sf1->sf0 goes to the wire, no hairpin, recovers); static-teardown = port out of the bridge / bridge deleted (no stale hw flows); lp-sf0-warm (F8 check, not default) = sf0 known, LP's ARP warm: LP must be learned; static-replace (F9 check, not default) = static over a learned entry (one entry, not aged); age = learned entries in use must not age out. Needs: ixd.sh done, eswitch switchdev, ports not in a bridge. Changes: driver (2 SFs added + removed), ports, host taps (restored). Time: ~2 min (+1 min age).
+# Usage: bridge.sh [A:B] [case ...]   Bridge offload on port A's PF (switchdev): guest bridge = uplink A + representors of 2 SFs (SF netdevs in netns); LP = port B. Cases (default: all but the bug checks age (F7), lp-sf0-warm (F8), static-replace (F9), uplink-down (F10)): from-to[@ping interval], host = Simics host as LP, fresh bridge + ARP each: initiator's 1st burst per device/seq (no ICMP on uplink or representors after seq 3, ARP control), FDB entry of each MAC on its own port (LP on the uplink) + offload right after the burst and after a wait, 2nd burst 0 slow path, sf<->sf not on the host tap; static = entries added by hand (bridge fdb add ... static) offloaded before traffic, 0 slow path from seq 1, survive ageing, deleted from hw too (relearned); static-wrong = sf0's MAC on the uplink (plain static: moved by the bridge; sticky: sf1->sf0 goes to the wire, no hairpin, recovers); static-teardown = port out of the bridge / bridge deleted (no stale hw flows); mac-move = sf0's MAC moves repr0 -> uplink -> back (flow follows); sf-del = SF deleted while bridged; uplink = uplink nomaster and back; uplink-down (F10 check, not default) = uplink down/up, SF traffic and representor carrier must survive; repr-updown = representor down / up (SF carrier follows); lp-sf0-warm (F8 check, not default) = sf0 known, LP's ARP warm: LP must be learned; static-replace (F9 check, not default) = static over a learned entry (one entry, not aged); age = learned entries in use must not age out. Needs: ixd.sh done, eswitch switchdev, ports not in a bridge. Changes: driver (2 SFs added + removed), ports, host taps (restored). Time: ~4 min.
 # Setup like scripts/set-switchdev-pfp.sh (SFs in netns, representors + uplink in a bridge).
 . "$(dirname "$0")/../lib.sh"
 read -r A B <<< "$(pair_split $1)"
@@ -15,7 +15,7 @@ check_eq "port $A eswitch (pci/$PCI)" "$(g "devlink dev eswitch show pci/$PCI" |
 
 # Endpoints: netns, IP, MAC, bridge port (DEV). LP = port B (loopback side B),
 # reached through the uplink A. Uplink A is a bridge port: no IP.
-declare -A NS IP MAC DEV
+declare -A NS IP MAC DEV NDEV
 NS[lp]=$LOOP_NS
 IP[lp]=$LOOP_IP_B
 MAC[lp]=$(gb "cat /sys/class/net/$LOOP_DEV_B/address")
@@ -25,6 +25,7 @@ for I in 0 1; do
     E=sf$I
     sf_add $PCI $((70 + I)) || finish
     DEV[$E]=$SF_REPR
+    NDEV[$E]=$SF_DEV
     NS[$E]=kdev-$E
     IP[$E]=10.99.0.$((11 + I))
     g "ip netns add ${NS[$E]}; ip link set $SF_DEV netns ${NS[$E]}
@@ -53,7 +54,7 @@ at_exit "g \"ip link del $BR 2> /dev/null\""
 # br_create [ageing s]: new bridge (nothing learned), ports in the order of
 # set-switchdev-pfp.sh (uplink first), empty ARP caches.
 br_create() {
-    local AG=""
+    local AG="" E
     [ -n "$1" ] && AG="ageing_time $(($1 * 100))"
     g "ip link add $BR type bridge stp_state 0 forward_delay 0 $AG
        ip link set $U master $BR; ip link set ${DEV[sf0]} up master $BR; ip link set ${DEV[sf1]} up master $BR
@@ -345,6 +346,172 @@ wcase() {
     g "ip link del $BR" || true
 }
 
+# states <label>: INFO bridge port states + carrier of uplink, representors, SF netdevs.
+states() {
+    echo "INFO $1 ports: $(g "bridge link show master $BR" 2> /dev/null | grep -oE '^[0-9]+: \S+|state \S+' | paste -sd' ' | sed 's/[0-9]*: //g')"
+    echo "INFO $1 carrier: uplink $(g "cat /sys/class/net/$U/carrier" 2> /dev/null || echo -) repr0 $(g "cat /sys/class/net/${DEV[sf0]}/carrier" 2> /dev/null || echo -) repr1 $(g "cat /sys/class/net/${DEV[sf1]}/carrier" 2> /dev/null || echo -) sf0 $(gn ${NS[sf0]} "cat /sys/class/net/${NDEV[sf0]}/carrier" 2> /dev/null || echo -) sf1 $(gn ${NS[sf1]} "cat /sys/class/net/${NDEV[sf1]}/carrier" 2> /dev/null || echo -)"
+}
+
+# learn <from> <to>: fresh ARP caches, from pings to: both learned + offloaded.
+learn() {
+    gn ${NS[$1]} "ip neigh flush all" || true
+    on $2 "ip neigh flush all" || true
+    check "$L $1->$2 ping (learn)" "$(ping_from $1 $2 $N)" " ($N|$((N - 1))) received"
+    check_fdb "$L learned" $1 10
+    check_fdb "$L learned" $2 10
+}
+# offloaded <from> <to>: a burst with 0 ICMP on the slow path.
+offloaded() {
+    slow_start
+    check "$L $1->$2 ping" "$(ping_from $1 $2 $N)" " ($N|$((N - 1))) received"
+    slow_stop "$L $1->$2" 0
+    check_eq "$L $1->$2 icmp on slow path" "$((SLOW_up + SLOW_r0 + SLOW_r1))" 0
+}
+
+# --- mac-move: sf0's MAC moves from repr0 to the uplink and back ----------------
+# The host takes sf0's MAC (its port on the cable = behind the uplink), sf0 is
+# down. The bridge moves the entry on the host's first frame (ARP broadcast),
+# the driver must move the flow: sf1's replies to that MAC reach the host, the
+# entry is on the uplink, one entry, offloaded. Back: sf0 up, host MAC restored,
+# sf0 talks: entry on repr0 again, offloaded.
+mcase() {
+    local L=mac-move HMAC=${MAC[host]} M0=${MAC[sf0]}
+    br_create
+    learn sf0 sf1
+    gn ${NS[sf0]} "ip link set ${NDEV[sf0]} down" || true
+    ip link set $LOOP_BR address $M0
+    at_exit "ip link set $LOOP_BR address $HMAC 2> /dev/null; g \"ip -n ${NS[sf0]} link set ${NDEV[sf0]} up\" 2> /dev/null"
+    MAC[host]=$M0
+    ip neigh flush dev $LOOP_BR || true
+    gn ${NS[sf1]} "ip neigh flush all" || true
+    check "$L host (sf0's MAC) -> sf1 ping" "$(ping_from host sf1 $N)" " ($N|$((N - 1))) received"
+    DEV[host]=$U
+    check_fdb "$L moved to the uplink" host 10
+    check_eq "$L one entry for the MAC" "$(fdb host | tr ';' '\n' | grep -c . || true)" 1
+    offloaded host sf1
+
+    ip link set $LOOP_BR address $HMAC
+    MAC[host]=$HMAC
+    gn ${NS[sf0]} "ip link set ${NDEV[sf0]} up" || true
+    for S in $(seq 30); do
+        [ "$(gn ${NS[sf0]} "cat /sys/class/net/${NDEV[sf0]}/carrier" 2> /dev/null)" = 1 ] && break
+        sleep 1
+    done
+    gn ${NS[sf0]} "ip neigh flush all" || true
+    gn ${NS[sf1]} "ip neigh flush all" || true
+    check "$L sf0->sf1 ping (back)" "$(ping_from sf0 sf1 $N)" " ($N|$((N - 1))) received"
+    check_fdb "$L back on repr0" sf0 10
+    check_eq "$L one entry for the MAC (back)" "$(fdb sf0 | tr ';' '\n' | grep -c . || true)" 1
+    offloaded sf0 sf1
+    g "ip link del $BR" || true
+}
+
+# --- sf-del: an SF deleted while its representor is bridged ----------------------
+# sf2 learned + offloaded, then devlink port del: its entry leaves the FDB, the
+# bridge keeps the other ports, lp<->sf0 still offloaded.
+sdcase() {
+    local L=sf-del E=sf2 P R
+    br_create
+    sf_add $PCI 72 || return 0
+    P=$SF_PORT
+    R=$SF_REPR
+    DEV[$E]=$R
+    NDEV[$E]=$SF_DEV
+    NS[$E]=kdev-$E
+    IP[$E]=10.99.0.13
+    g "ip netns add ${NS[$E]}; ip link set $SF_DEV netns ${NS[$E]}
+       ip -n ${NS[$E]} addr add ${IP[$E]}/24 dev $SF_DEV
+       ip -n ${NS[$E]} link set $SF_DEV up; ip -n ${NS[$E]} link set lo up
+       ip link set $R up master $BR" || true
+    at_exit "g \"ip netns del ${NS[$E]} 2> /dev/null\""
+    MAC[$E]=$(gn ${NS[$E]} "cat /sys/class/net/$SF_DEV/address")
+    learn $E lp
+    g "devlink port function set $P state inactive; devlink port del $P" || true
+    check_eq "$L $R gone" "$(g "ls /sys/class/net" | grep -cx "$R" || true)" 0
+    check_eq "$L fdb $E gone" "$(g "bridge fdb show" | grep -ci "^${MAC[$E]} " || true)" 0
+    check_eq "$L bridge ports left" "$(g "bridge link show master $BR" | grep -c 'state forwarding' || true)" 3
+    learn lp sf0
+    offloaded lp sf0
+    g "ip netns del ${NS[$E]}" 2> /dev/null || true
+    g "ip link del $BR" || true
+}
+
+# --- uplink <nomaster|down>: uplink leaves the bridge / goes down ----------------
+# lp, sf0, sf1 learned. Uplink nomaster or down: lp's entry leaves the FDB,
+# sf0<->sf1 still offloaded and not on the wire, lp->sf0 fails. Back: lp->sf0
+# works, lp learned on the uplink + offloaded.
+ucase() {
+    local L=uplink W HOW=$1 E S
+    br_create
+    learn lp sf0
+    learn sf1 sf0
+    for HOW in $HOW; do
+        L="uplink $HOW"
+        if [ $HOW = nomaster ]; then
+            g "ip link set $U nomaster" || true
+        else
+            g "ip link set $U down" || true
+        fi
+        states "$L"
+        check_eq "$L fdb lp gone" "$(fdb lp | grep -c . || true)" 0
+        hcap_start $(tap $A) icmp
+        offloaded sf0 sf1
+        W=$(hcap_stop)
+        check_eq "$L sf0->sf1 icmp on host tap (switched in the card)" "$W" 0
+        check "$L lp->sf0 ping fails" "$(ping_from lp sf0 10)" " 0 received"
+        if [ $HOW = nomaster ]; then
+            g "ip link set $U master $BR" || true
+        else
+            g "ip link set $U up" || true
+            loop_wait_carrier 1 30
+        fi
+        states "$L back"
+        check_eq "$L back, bridge ports forwarding" "$(g "bridge link show master $BR" | grep -c 'state forwarding' || true)" 3
+        # F10: representors stay without carrier. Recovery try: bounce the SF
+        # netdevs (re-enables the SF vports -> representor link up).
+        if [ "$(g "cat /sys/class/net/${DEV[sf0]}/carrier" 2> /dev/null)" != 1 ]; then
+            for E in sf0 sf1; do
+                gn ${NS[$E]} "ip link set ${NDEV[$E]} down; ip link set ${NDEV[$E]} up" || true
+            done
+            for S in $(seq 30); do
+                [ "$(g "bridge link show master $BR" | grep -c 'state forwarding' || true)" = 3 ] && break
+                sleep 1
+            done
+            states "$L after SF netdev down/up"
+            echo "INFO $L recovery by SF netdev down/up: $(g "bridge link show master $BR" | grep -c 'state forwarding' || true) of 3 ports forwarding"
+        fi
+        learn lp sf0
+        offloaded lp sf0
+    done
+    g "ip link del $BR" || true
+}
+
+# --- repr-updown: representor down / up -------------------------------------------
+# sf0 learned. repr0 down: sf0's entry leaves the FDB, the SF netdev loses carrier
+# (link follows the representor), lp->sf0 fails. repr0 up: carrier back, works,
+# sf0 learned on repr0 + offloaded.
+rcase() {
+    local L=repr-updown S
+    br_create
+    learn sf0 lp
+    g "ip link set ${DEV[sf0]} down" || true
+    states "$L down"
+    check_eq "$L fdb sf0 gone" "$(fdb sf0 | grep -c . || true)" 0
+    check_eq "$L sf0 carrier with repr0 down" "$(gn ${NS[sf0]} "cat /sys/class/net/${NDEV[sf0]}/carrier" 2> /dev/null || echo none)" 0
+    check "$L lp->sf0 ping fails" "$(ping_from lp sf0 10)" " 0 received"
+    g "ip link set ${DEV[sf0]} up" || true
+    for S in $(seq 30); do
+        [ "$(gn ${NS[sf0]} "cat /sys/class/net/${NDEV[sf0]}/carrier" 2> /dev/null)" = 1 ] && break
+        sleep 1
+    done
+    states "$L up"
+    check_eq "$L sf0 carrier with repr0 up" "$(gn ${NS[sf0]} "cat /sys/class/net/${NDEV[sf0]}/carrier" 2> /dev/null || echo none)" 1
+    check_eq "$L back, bridge ports forwarding" "$(g "bridge link show master $BR" | grep -c 'state forwarding' || true)" 3
+    learn sf0 lp
+    offloaded sf0 lp
+    g "ip link del $BR" || true
+}
+
 # --- bage: learned entries in use must not age out (F7) ---------------------------
 # Continuous lp->sf0 traffic, bridge ageing time AGE s (guest time).
 bage() {
@@ -361,7 +528,7 @@ bage() {
 }
 
 CASES=${*:2}
-CASES=${CASES:-sf0-sf1 lp-sf0 sf0-lp lp-sf0@1 host-sf0 sf0-host static static-wrong static-teardown}
+CASES=${CASES:-sf0-sf1 lp-sf0 sf0-lp lp-sf0@1 host-sf0 sf0-host static static-wrong static-teardown mac-move sf-del uplink repr-updown}
 for C in $CASES; do
     case $C in
         age)    bage ;;
@@ -370,6 +537,11 @@ for C in $CASES; do
         static-wrong)    swcase ;;
         static-teardown) stcase ;;
         lp-sf0-warm)     wcase ;;
+        mac-move)        mcase ;;
+        sf-del)          sdcase ;;
+        uplink)          ucase nomaster ;;
+        uplink-down)     ucase down ;;
+        repr-updown)     rcase ;;
         *@*)    P=${C%@*}; bcase ${P%-*} ${P#*-} ${C#*@} ;;
         *)      bcase ${C%-*} ${C#*-} ;;
     esac

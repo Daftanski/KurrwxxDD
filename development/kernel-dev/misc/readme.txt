@@ -133,6 +133,16 @@
       driver; libie_br_fdb_entry_create finds its old learned entry and
       libie_br_fdb_entry_notify_and_cleanup sends SWITCHDEV_FDB_DEL_TO_BRIDGE,
       so the bridge deletes the user's entry (br_fdb_external_learn_del).
+   F10 2026-11-18 bridge offload, uplink admin down (bridge.sh case
+      uplink-down, LAVA jobs 41-43): both SF representors lose carrier, all
+      bridge ports disabled, sf0<->sf1 fails (SF netdevs keep carrier 1);
+      uplink up: uplink back, representors stay carrier 0 (ports disabled)
+      until the SF netdevs go down/up (re-enables the SF vports:
+      ixd_vport_sf_enable -> ixd_repr_sf_link_up). Uplink nomaster: fine.
+   Also checked, work (job 44): MAC move repr0 -> uplink -> back (one entry,
+      flow follows, offloaded), SF deleted while bridged (entry gone, rest
+      offloaded), uplink nomaster and back, representor down/up (SF carrier
+      follows, relearned + offloaded).
    Static entries (bridge fdb add ... static, jobs 34-38) work: offloaded
       before traffic, 0 slow path from seq 1, not aged, deleted from hw too,
       moved by the bridge when not sticky, sticky: traffic to the wire, no
