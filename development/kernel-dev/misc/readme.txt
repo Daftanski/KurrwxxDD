@@ -111,7 +111,11 @@
       relearns a MAC only from slow-path packets: SF entry gone + LP entry
       still offloaded -> LP->SF requests flood via the slow path, SF replies
       stay offloaded, SF MAC is not relearned until the LP entry ages too.
-      User saw "lp->sf not all offloaded" in manual tests: matches.
+      User also sees in manual tests (< 5 min, LP first): ICMP on the uplink
+      and the LP MAC not "offload" on the uplink in bridge fdb show. Not
+      reproduced on the CI kernel (LAVA jobs 34, 35): lp, lp at 1 s interval
+      and the Simics host as LP all offloaded right after the 1st burst (only
+      seq 1 on the slow path). Open: user's kernel / setup differs?
    F1/F2 stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
 ## Traffic model: loopback (all traffic tests)
