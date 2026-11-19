@@ -115,7 +115,28 @@
       and the LP MAC not "offload" on the uplink in bridge fdb show. Not
       reproduced on the CI kernel (LAVA jobs 34, 35): lp, lp at 1 s interval
       and the Simics host as LP all offloaded right after the 1st burst (only
-      seq 1 on the slow path). Open: user's kernel / setup differs?
+      seq 1 on the slow path). Explained by F8 (warm ARP cache).
+   F8 2026-11-18 bridge offload, a MAC is learned only from slow-path frames;
+      frames that match an offloaded flow never reach the bridge (bridge.sh
+      case lp-sf0-warm, LAVA jobs 37, 39): sf0 known (offloaded), LP's ARP
+      cache warm (no broadcast), LP pings sf0 -> requests switched in the card,
+      LP never learned during the burst (bridge fdb show: no LP entry), all 20
+      of sf0's replies flooded via the slow path (uplink + both representors).
+      Same in static-teardown / static-wrong-sticky: with LP's entry offloaded,
+      sf0 is not relearned after its entry goes. Matches the user's manual
+      test (LP first, ICMP on the uplink, LP MAC not offloaded).
+   F9 2026-11-18 bridge fdb replace <mac> ... master static over a learned
+      (offloaded) entry: rc 0, but the entry disappears (~1 s) and comes back
+      learned (extern_learn), not static; then F7 ages it (bridge.sh case
+      static-replace, jobs 36-38). Cause: the kernel keeps the entry
+      (static + added_by_user, extern_learn bit still set) and notifies the
+      driver; libie_br_fdb_entry_create finds its old learned entry and
+      libie_br_fdb_entry_notify_and_cleanup sends SWITCHDEV_FDB_DEL_TO_BRIDGE,
+      so the bridge deletes the user's entry (br_fdb_external_learn_del).
+   Static entries (bridge fdb add ... static, jobs 34-38) work: offloaded
+      before traffic, 0 slow path from seq 1, not aged, deleted from hw too,
+      moved by the bridge when not sticky, sticky: traffic to the wire, no
+      hairpin, port out of the bridge / bridge delete leave no stale flows.
    F1/F2 stay in dmesg until restart: boot.sh and ixd.sh (whole dmesg) FAIL until then.
 
 ## Traffic model: loopback (all traffic tests)
