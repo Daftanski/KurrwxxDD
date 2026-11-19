@@ -1,0 +1,26 @@
+Glossary - UEFI driver and tests
+================================
+Scope:   words used in 01-uefi-driver-model.txt and 02-test-guide.txt
+Updated: 2026-10-30
+Related: .notes/00-theory/05-glossary.txt (network, chip, firmware)
+
+AIP            Adapter Information Protocol: media state, IPv6 support.
+Bus driver     Driver that creates child handles (one per port here).
+Child          Handle a bus driver creates under its controller.
+ComponentName2 Protocol that gives driver/controller names per language.
+Controller     Device handle a driver binds to (our PCI function).
+Device path    "Where is the device": PciRoot(..)/Pci(..)/MAC(..).
+Driver Binding Supported/Start/Stop: how a driver takes a device.
+Driver Health  Protocol: is the controller Healthy / Failed / ...
+DrvDiag        Driver Diagnostics: Standard / Extended / Manufacturing.
+Expect         Tool that types into a program and waits for text (Tcl).
+FMP            Firmware Management Protocol: read/update adapter NVM.
+Formset        One HII "page set" (forms + strings + questions).
+Handle         ID of a thing in UEFI (driver, device, port).
+HII            Human Interface Infrastructure: setup pages of a driver.
+NII            Network Interface Identifier: points SNP to our UNDI.
+Protocol       Table of functions (GUID) installed on a handle.
+QID            HII question ID: one field on a setup page.
+SCT            UEFI Self-Certification Test suite (spec conformance).
+Unload         Driver function that undoes everything; NULL = no unload.
+Varstore       Struct that holds HII question values (ours: NicCfgData).

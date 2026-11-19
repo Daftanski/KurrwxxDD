@@ -1,0 +1,59 @@
+LAVA - usage
+============
+Scope:   submit jobs, read results, nightly runs, devices
+Updated: 2026-11-12
+Related: 01-overview.txt, 03-maintenance.txt
+
+1. Submit and read (on the workstation, ~/lava/svl)
+---------------------------------------------------
+  ./submit.sh [PFD|PFP] [step ...]      prints the job id
+      ./submit.sh PFD all
+      ./submit.sh PFP restart ping unload
+  ./results.sh [--wait] <job id>        state, failed cases, FAIL lines
+- Steps = run-tests.sh steps (../simics/03-uefi.txt 3.).
+- Job template: jobs/simics-ping.yaml (submit.sh fills job name,
+  STEPS, PFP).
+- Web UI: Scheduler > Jobs; a job's "Results" tab lists test cases.
+
+2. Nightly
+----------
+  crontab of the workstation user: 01:00 PFD all, 01:05 PFP all.
+  Output: svl/nightly.log. Change: crontab -e.
+
+3. Devices
+----------
+- Add a Simics host: put host-ip-<n> and host-role-<n> in config.txt
+  (see config.example), then
+    development/lava/add-device.sh <n>
+  Device simics-<n>, tag = first word of the role, lowercase. It renders
+  devices/simics-host.jinja2.template, copies it into lava-server (with
+  the chown; wrong owner makes lava-server crash-loop), adds the device,
+  sets the tag. Run it again after an IP or role change (then it only
+  replaces the device file; the device and its tag stay).
+  Check:
+    cd ~/lava
+    docker compose exec lava-server lava-server manage devices list
+    docker compose exec lava-server lava-server manage devices check simics-<n>
+  The host also needs the worker key (next point) before a job can run.
+  Env: CONFIG = other config file, LAVA_DIR = other LAVA directory.
+  Tested on a throwaway device: add, repeat run, check, delete.
+- Older devices (simics-2-122, simics-3-64) have the IP in their name.
+  New ones are simics-<n>. Tags decide where a job runs, not names.
+- Host needs the worker key: add svl/ssh/id_ed25519.pub to its
+  /root/.ssh/authorized_keys (again after every reimage).
+- Host gone: retire the device:
+    docker compose exec lava-server lava-server manage devices \
+      update --health RETIRED <name>
+- Device tags pick the host: tag = role in config.txt (pfd, pfp).
+  submit.sh sets tags: [pfd|pfp]; add-device.sh sets the device tag.
+
+4. Rules
+--------
+- After changing lava-run.sh or tests: redeploy the setup to the
+  hosts (setup-uefi-dev.sh <ip>), jobs use the host copy.
+- One job per device; a job restarts Simics: do not run manual
+  tests on a host while LAVA uses it.
+
+5. Open
+-------
+- No Linux (kernel-dev) job yet.

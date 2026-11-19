@@ -1,0 +1,288 @@
+The UEFI driver model - what a UEFI driver must provide
+=======================================================
+Scope:   theory, UEFI spec + edk2 Shell behavior; no CNIC implementation
+Updated: 2026-10-30
+Related: 02-test-guide.txt (how each part is tested), 03-glossary.txt
+         .notes/00-theory/03-uefi-network-stack.txt (UNDI, SNP, MNP)
+
+Read this first if you do not know what a "handle", a "protocol" or
+"driver binding" is. Every test in misc/tests/func/ checks one of the
+things described here.
+
+
+1. The big picture
+------------------
+UEFI firmware (the "BIOS") runs before the operating system. It must
+talk to disks, keyboards and network cards. It does that through
+DRIVERS, like an OS does. A UEFI driver is just a program (.efi file,
+PE/COFF format) that the firmware loads into memory and runs.
+
+Our driver (E4999X10.EFI) is a driver for a network card. When it runs
+it does NOT talk to the user. It only offers services to other UEFI
+code: "here is a network port, you can send and receive frames".
+
+Life of a driver, in one picture:
+
+   +---------+   load    +---------+  connect   +-------------------+
+   | .efi on | --------> | driver  | ---------> | driver manages a  |
+   |  disk   |           | in RAM  |            | device (children) |
+   +---------+           +---------+            +-------------------+
+                              ^                     |
+                              |    disconnect       |
+                              +---------------------+
+                              |
+                              | unload
+                              v
+                         memory freed
+
+
+2. Handles and protocols
+------------------------
+2.1 Handle
+    A HANDLE is just a number (an ID) in the firmware's big table.
+    Everything gets a handle: each loaded driver, each PCI device,
+    each network port, each disk.
+    In the UEFI Shell, handles are shown as short hex numbers, e.g.
+    "1BD" or "16F".
+
+2.2 Protocol
+    A PROTOCOL is a table of functions (a C struct with function
+    pointers), identified by a GUID (a 128-bit unique number).
+    Example: the "Simple Network Protocol" has functions Transmit(),
+    Receive(), ...
+
+    Code puts ("installs") a protocol ON a handle. Other code asks the
+    firmware: "give me all handles that have protocol X" and then
+    calls the functions.
+
+    Small example:
+
+      Handle 1BE  (one network port)
+        |-- DevicePath protocol      "where am I": PciRoot/Pci/MAC(...)
+        |-- NII 3.1 protocol         "here is my low-level UNDI API"
+        |-- HII Config Access        "here are my settings"
+        `-- Adapter Information      "ask me for media state etc."
+
+    So: handle = THING, protocol = WHAT YOU CAN DO WITH IT.
+
+2.3 Device path
+    A DEVICE PATH tells where a device is, from the root down, like a
+    file path:
+        PciRoot(0x81)/Pci(0x0,0x0)/MAC(0A0000080318,0x1)
+        ^ PCI root      ^ PCI device  ^ network port with this MAC
+    Each node adds one step. A child device's path = parent path + one
+    more node.
+
+
+3. Driver binding: how a driver finds its device
+------------------------------------------------
+A UEFI driver does NOT search for hardware itself. It installs the
+DRIVER BINDING protocol with 3 functions:
+
+    Supported(Controller)   "Can you drive this device?"
+                            Usually: read PCI vendor/device ID, answer
+                            yes or no. Must be fast, must not change
+                            the device.
+    Start(Controller)       "Yes? Then take it." Init the hardware,
+                            create CHILD handles (one per port), install
+                            protocols on them.
+    Stop(Controller)        "Let it go." Remove children, uninstall
+                            protocols, stop the hardware, free memory.
+
+The firmware (or the Shell command "connect") calls Supported() on
+every driver for every device. If a driver says yes, Start() runs.
+
+   PCI bus driver          our driver
+   creates handle 16F      (DriverBinding)
+   with PciIo protocol          |
+          |   connect           |
+          +-------------------> Supported(16F)? -> yes (8086:12A1)
+          |                     Start(16F)
+          |                       create child 1BE (port 0)
+          |                       create child 1BF (port 1)
+          |                       ...      1C5 (port 7)
+
+Words:
+- CONTROLLER = the device handle the driver binds to (here: the PCI
+  function, handle 16F).
+- CHILD = a new handle the driver creates under the controller (here:
+  one per network port). This is a "bus driver" (it makes children).
+  A "device driver" makes no children.
+
+How a driver "owns" a protocol: OpenProtocol() with an attribute.
+    GET_PROTOCOL  just look, no ownership. Apps should use this.
+    BY_DRIVER     "I drive this". Used in Start(). SNP opens our NII
+                  BY_DRIVER, MNP opens SNP BY_DRIVER, and so on.
+    EXCLUSIVE     "only me". UEFI first calls Stop() of every
+                  BY_DRIVER user of that handle. Example: an app that
+                  opens a port handle EXCLUSIVE kicks the whole network
+                  stack (SNP, MNP, IP) off that port.
+
+Shell commands for this:
+    drivers               list all drivers (one line each)
+    dh -d <driver>        which controllers / children a driver has
+    disconnect <ctrl>     call Stop()
+    connect -r            call Supported()/Start() again, recursively
+    devtree               tree of all controllers and children
+
+
+4. Loading and unloading
+------------------------
+4.1 load
+    "load X.EFI" reads the file, puts it in memory and runs its entry
+    point. The entry point installs DriverBinding and the other
+    driver-wide protocols ON THE IMAGE HANDLE (the handle of the
+    driver itself). Then the Shell connects it to devices.
+    The image handle also has:
+      LoadedImage        where the image is in memory, its size, and
+                         the Unload function pointer
+      ImageDevicePath    from which file it was loaded
+
+4.2 unload
+    "unload <handle>" calls the driver's Unload function. A correct
+    Unload must:
+      - Stop() all controllers (remove all children),
+      - uninstall every protocol it installed,
+      - free all memory it allocated.
+    If Unload is 0 (NULL), the driver can never be removed.
+
+4.3 Memory leak
+    In UEFI, memory is not freed for you when a driver goes away.
+    Every AllocatePool/AllocatePages must have a matching Free.
+    A leak means: after load + unload, there is less free memory than
+    before. Repeat many times and the firmware runs out of memory.
+    Shell command "memmap" shows the memory map and a summary:
+        Available :     67,010,787 Pages (...)
+    One page = 4 KiB. Compare "Available" before and after.
+
+
+5. Driver-wide helper protocols (on the image handle)
+-----------------------------------------------------
+5.1 Component Name / Component Name 2
+    Give human-readable names:
+      GetDriverName(lang)               "Intel(R) CNIC Driver 4.9.99"
+      GetControllerName(ctrl, child)    "Intel(R) Ethernet Connection.."
+    Component Name (old, EFI 1.1) uses 3-letter languages ("eng").
+    Component Name 2 (UEFI 2.x) uses RFC 4646 languages ("en-US").
+    If a language is not supported, the call returns EFI_UNSUPPORTED;
+    the Shell then shows the English name.
+
+5.2 Driver version (the "drivers" VERSION column)
+    The Driver Binding protocol has a Version field (32-bit number).
+    The Shell prints it as 8 hex digits, e.g. 04099900. The vendor
+    decides how to encode its version in it.
+
+5.3 Driver Diagnostics / Driver Diagnostics 2
+    RunDiagnostics(ctrl, child, type, lang). Three types:
+      Standard        quick self test, safe to run any time
+      Extended        longer test, may disturb traffic (e.g. loopback)
+      Manufacturing   factory test; OPTIONAL in the spec
+    Result is an EFI_STATUS: Success, Unsupported, DeviceError, ...
+    Shell: drvdiag -s | -e | -m <driver> <ctrl> [child]
+
+5.4 Driver Health
+    GetHealthStatus(ctrl, child) -> Healthy, Repair required,
+    Configuration required, Failed, Reconnect required, Reboot
+    required. The boot manager (BDS) asks every driver at boot and
+    can show messages to the user.
+
+5.5 Supported EFI Spec Version
+    One number: which UEFI spec version the driver follows.
+    0x0002005A = 2.90 (major 2, minor 90).
+
+5.6 Driver Configuration (old)
+    Old way to configure a driver from the Shell (drvcfg). Replaced by
+    HII (see 6.1). A modern driver does not need it.
+
+
+6. Per-port protocols (on each child handle)
+--------------------------------------------
+6.1 HII and HII Config Access - the setup pages
+    HII = Human Interface Infrastructure. It is how a driver puts pages
+    into the BIOS setup screen ("Device Manager").
+
+    The driver gives the firmware a FORMSET:
+      - forms (pages), written in VFR, compiled to IFR bytecode
+      - strings, in one or more languages (en-US, fr-FR, ...)
+      - questions: fields the user can see or change, each with a
+        QUESTION ID (qid), a type (Numeric, OneOf, String, Text),
+        and flags (Callback, GrayOut = read only, ...)
+
+    Values of questions are stored in a VARSTORE (a small struct, here
+    "NicCfgData"). The firmware reads/writes it through the driver's
+    HII CONFIG ACCESS protocol:
+      ExtractConfig(request)   driver -> firmware: current values
+      RouteConfig(config)      firmware -> driver: save new values
+      Callback(action, qid)    "the user just changed field qid"
+    Requests and answers are text strings ("GUID=...&NAME=...&PATH=
+    ...&OFFSET=0002&WIDTH=0001&VALUE=01").
+
+    Simple flow when the user opens the page:
+
+      Setup browser            HII database          our driver
+          | get forms + strings  |                       |
+          |--------------------->|                       |
+          | ExtractConfig("OFFSET=0002&WIDTH=0001")      |
+          |--------------------------------------------->|
+          |                 "...&VALUE=01"  (Connected)  |
+          |<---------------------------------------------|
+          | user changes Blink LEDs to 3, presses F10    |
+          | RouteConfig("...OFFSET=0000&VALUE=0003")     |
+          |--------------------------------------------->| blink LEDs
+
+    Without a setup screen we use a Shell app (hii.efi, see
+    02-test-guide.txt 3.) that does the same calls.
+
+6.2 Adapter Information Protocol (AIP)
+    GetSupportedTypes() -> list of info GUIDs. GetInformation(guid).
+    Common types:
+      Media State              is the cable/link up (Success = up)
+      UNDI IPv6 Support        can UNDI do IPv6 (1 = yes)
+      Network Boot, SAN MAC    (not in our driver)
+    Vendors can add their own GUIDs (the Shell prints UnknownInfoType).
+
+6.3 Firmware Management Protocol (FMP)
+    Lets the firmware / an OS tool read and update the adapter's flash
+    (NVM). GetImageInfo() returns version, name, which images are
+    inside. SetImage() writes a new image. One adapter = one flash, so
+    FMP is installed on ONE handle only, not on every port.
+
+6.4 Network Interface Identifier 3.1 (NII) and UNDI
+    The entry point for the network stack. See
+    03-uefi-network-stack.txt. The firmware's SNP driver finds NII
+    and builds SNP -> MNP -> IP -> ... on top.
+
+6.5 Device Path with a MAC node
+    Each port gets parent path + MAC(<mac>,<iftype>). iftype 0x1 =
+    Ethernet. Boot options (PXE, HTTP) use this path to find the port.
+
+
+7. The UEFI Shell as a test tool
+--------------------------------
+The Shell has commands for nearly every item above:
+
+    load / unload            4.1, 4.2
+    drivers [-l lang]        list + name + version   (5.1, 5.2)
+    dh -d <drv>              controllers + children  (3)
+    dh -v <handle>           all protocols on a handle, with details
+    drvdiag -s|-e|-m         5.3
+    drvcfg                   5.6
+    connect / disconnect     3
+    memmap                   4.3
+    ifconfig, ping           network (.notes/00-theory/
+                             03-uefi-network-stack.txt)
+
+So most driver features can be tested by typing Shell commands and
+reading the text they print. That is what our tests do
+(02-test-guide.txt).
+
+
+8. What is NOT covered by Shell commands
+----------------------------------------
+- HII values: the Shell has no command; we use hii.efi.
+- AIP GetInformation for vendor GUIDs, FMP GetImageInfo details,
+  Driver Health messages: "dh -v" shows some, the rest needs an app.
+- Spec conformance (every error code, every bad parameter): the UEFI
+  SCT (Self-Certification Test) suite does that.
+- ExitBootServices: when the OS starts, the driver must stop DMA.
+  Needs an OS loader or a special app.

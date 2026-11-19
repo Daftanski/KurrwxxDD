@@ -1,0 +1,133 @@
+Network stack tests - plan of action
+====================================
+Scope:   new Simics tests in development/uefi-dev/misc/tests/net/
+Updated: 2026-10-30
+Related: ../../../.notes/00-theory/03-uefi-network-stack.txt
+         ../../doc/simics/03-uefi.txt
+         ../../../.notes/00-theory/08-cnic-uefi-driver.txt
+         11-results-driver.txt
+         development/uefi-dev/misc/readme.txt
+
+Note 2026-10-30: tests moved to misc/tests/net/ and misc/tests/func/,
+tools to misc/tools/<tool>/. Paths below are the old ones.
+
+
+1. Starting point
+-----------------
+- Test layout (2026-10-29, not yet run on host):
+    misc/lib.sh        helpers: uefi_begin/uefi_cmd/uefi_end/uefi_log,
+                       check, finish, tap/uefi_ip/host_ip, host_setup
+    misc/run-tests.sh  runner, steps = "restart" or test names
+    misc/tests/        ping, port-isolation, mcast, foreign-mac,
+                       driver-log, unload
+- Driver produces NII 3.1 (NiiLib.inf). BIOS builds SNP, MNP, IP on
+  top. Ping works, so this path is OK.
+- BIOS knob EfiNetworkSupport=0x1 is set (core/uefi-dev.preset.yml).
+- Port P: UEFI eth<P+1> 192.168.P.101 <-> host cnic_tap_0_P
+  192.168.P.200.
+
+
+2. Open questions (check first)
+-------------------------------
+2.1 Which network drivers are in the BIOS? In the shell: "drivers".
+    Look for: PXE Base Code, HTTP Boot, DHCP4/6, MTFTP4/6, DNS, TLS,
+    HTTP, TCP4/6, UDP6, IP6.
+2.2 Which shell commands exist: tftp, http, ping6, ifconfig6.
+2.3 Host tools: dnsmasq, iperf3, python3. Ask before installing.
+2.4 PXE/HTTP boot needs the driver at BDS time (we load it from the
+    shell, too late). Pick one way (see 4.1).
+
+
+3. Phases
+---------
+Each phase = one or more files in misc/tests/, added to the default
+list in run-tests.sh only after they pass on host 1.
+
+Phase 0 - deploy and run the new layout
+  - setup-uefi-dev.sh <host ip>, run misc/run-tests.sh.
+  - Expect same results as old full-test.sh (all PASS).
+
+Phase 1 - quick checks, no host tools
+  1a large.sh    ping -l 1472 / 4000 / 8000 (IP fragments).
+                 Checks max frame size, IP reassembly.
+  1b bind.sh     disconnect / connect -r / reconnect on the driver
+                 handle, then ping. Checks driver binding Stop/Start.
+  1c parallel.sh host pings on all 8 taps at the same time.
+                 Checks queues per port.
+
+Phase 2 - needs dnsmasq on the host
+  2a dhcp.sh     dnsmasq on one tap, ifconfig -s ethN dhcp, check IP.
+                 Checks broadcast RX, DHCP.
+  2b tftp.sh     shell "tftp" of a known file, compare with "comp"
+                 against a copy on fs1:. Checks bulk RX, data.
+  2c ipv6.sh     ifconfig6 + ping6, RA from dnsmasq. Checks IPv6,
+                 multicast.
+
+Phase 3 - network boot
+  3a pxe.sh      dnsmasq DHCP + TFTP serves pxe-ok.efi (prints
+                 "PXE-OK"). Pass = "PXE-OK" in serial log.
+  3b http-boot.sh  dnsmasq DHCP (vendor class HTTPClient + URL) +
+                 python3 -m http.server. Same pass rule.
+                 HTTPS later (needs TLS driver + cert).
+
+Phase 4 - stress and conformance
+  4a flood.sh    ping -f / iperf3 UDP to UEFI, then normal ping must
+                 still work. Checks RX ring overflow, no hang.
+  4b link.sh     Simics link down/up, ifconfig -l media state.
+  4c sct         UEFI SCT SNP + NII cases from the USB drive.
+
+
+4. Details
+----------
+4.1 Driver at boot time (for phase 3). Options:
+    a) "bcfg driver add 0 fs1:\E4999X10.EFI cnic", reset. BIOS loads
+       the driver. Then "bcfg boot addh" on the port handle and set
+       BootNext. Simple, but costs one extra reboot.
+    b) Shell "exit" to boot manager. Works only if BIOS refreshes boot
+       options. Menu over serial is hard to automate.
+    c) Small EFI app: find LoadFile on the port handle, call it.
+       Most reliable. Needs a new tiny app in the repo.
+    Start with a); move to c) if a) is slow or flaky.
+4.2 Host DHCP must bind only to one tap (dnsmasq --interface,
+    --bind-interfaces) so it does not touch other host networks.
+4.3 Each test stops what it starts (dnsmasq, http.server, tcpdump).
+4.4 Test files for tftp/pxe go to development/uefi-dev/misc/data/.
+
+
+5. Checklist
+------------
+[x] Phase 0  deploy + run new layout, all PASS
+[x] 2.1-2.3  BIOS has PXE, HTTP boot, DHCP4/6, MTFTP4/6, IP6, TCP,
+             DNS, HTTP. Shell has NO tftp, http, ping6, ifconfig6.
+             Host has dnsmasq.
+[x] Phase 1  large PASS, bind PASS, parallel FAIL (see 7.)
+[x] Phase 2  dhcp PASS (needs ~30 s wait). download (tftp+http) PASS,
+             ipv6 PASS. Tools built from edk2 ShellPkg
+             (misc/tools/netcmds/build.sh): tftp.efi, http.efi, shell.efi
+             (full shell, has ping6/ifconfig6).
+[x] Phase 3  pxe PASS (option 4.1 c, misc/tools/pxeboot/). http-boot PASS
+             (pxeboot <MAC> http). Note: HTTP boot reinstalls the
+             handle device path in LoadFile, so the app must pass a
+             copy to LoadImage (else Out of Resources).
+[ ] Phase 4  flood, link, sct
+[ ] Update readme.txt after each phase
+
+
+6. Risks
+--------
+- Simics speed: big TFTP/HTTP files or floods may hit timeouts. Keep
+  files small (1-4 MB) and timeouts in lib.sh in mind (300 s).
+- Missing BIOS drivers (2.1) can block phase 2c/3 completely.
+- Extra reboot in 4.1 a) adds about 2 minutes per network boot test.
+
+
+7. Results 2026-10-29
+---------------------
+- parallel.sh (host ping -i 0.2, 40 pings per port):
+    1 or 2 ports: 0% loss.
+    4 ports: 1 of 40 lost on 2 ports.
+    8 ports: 1-3 of 40 lost on 5-7 ports.
+  Not root-caused yet. Candidates: RX path shared by ports, MNP
+  poll rate, Simics timing.
+- dhcp.sh: 5 s stall was too short (DISCOVER/OFFER only, no
+  REQUEST). 30 s works on all 8 ports.

@@ -1,0 +1,68 @@
+Simics - UEFI (UEFI shell, driver work)
+=======================================
+Scope:   uefi-dev: boot to the UEFI shell, load and test an EFI
+         driver (example: CNIC driver E4999X10.EFI)
+Updated: 2026-11-12
+Related: 01-overview.txt, development/uefi-dev/readme.txt,
+         development/uefi-dev/doc/02-test-guide.txt
+IPs:     ../../../config.txt only
+
+1. Flow
+-------
+- Framework to a host: development/setup-uefi-dev.sh <host ip>
+  (never overwrites EFI files on the host).
+- Put an EFI on the host: copy to core/usb-drive/, then
+  core/usb-replug.sh (~7 s, no reboot) or core/restart.sh.
+  CNIC: nic-core/EXEC_CNIC_BUILD.sh <host ip> does build + copy +
+  replug.
+- core/swap-driver.sh: replug + unload old + load new (~70 s).
+- Tests run any EFI: DRIVER=<name>.EFI.
+
+2. UEFI shell
+-------------
+- fs0: NVMe (Linux disk), fs1: USB drive (our files), fs2: Simics
+  agent disk. Tests need fs1:. If not: core/usb-port (USB port).
+  Symptom: "load: File not found" on FS1:. Check the Mapping table
+  in logs/uefi_serial.log. Host 2: USB drives map before NVMe and
+  port 3 gives fs0:, so it uses port 5 (echo 5 > core/usb-port).
+- eth0 = i210 (BIOS driver), eth1..eth8 = CNIC ports.
+- Shell output has ANSI codes (also inside words); serial log
+  logs/uefi_serial.log is flushed late: strip codes, wait for a
+  marker line. Driver debug prints mix with shell output.
+- No ifconfig6 / ping6 / tftp / http in the shell: misc/tools/netcmds/.
+
+3. Tests
+--------
+- misc/run-tests.sh [restart|load|net|func|all|<test>].
+  Full run ~45 min per host.
+- Read the test's "Needs:" header first.
+- Port addresses, MACs, taps: misc/lib.sh (one subnet per port).
+- tcpdump on host: tcpdump -eni cnic_tap_0_<port>.
+
+4. Host prerequisites (uefi-dev only)
+-------------------------------------
+- mtools: if missing, copy binary + mcopy/mdir links to
+  /root/.local/bin, use PATH=/root/.local/bin:$PATH.
+- $bios in startup_scripts/vpc_launch.simics: release BIOS
+  (keep a .orig backup).
+- BIOS knob engine fails: restart says "UEFI Shell not reached",
+  logs/simics_console.log has "Could not change BIOS knobs" and
+  FileNotFoundError in bios_knobs/<hash>/. Cause: Simics cannot
+  download the knob tools (progknobs, xmlcli, BpmGen). has-log/
+  simics_vm1.log: "'NoneType' object has no attribute
+  'download_artifact'" = no Infra Tools package (devtools_base).
+  Files are public, but with Infra Tools a login is needed (below).
+  Simics vp20.9.6.0 (Infra Tools 7.10.0):
+  "account None is not authorized to access Artifactory server".
+  Bug in devtools_base/core/config.py get_auth(): no credentials
+  -> returns (None, None), not None, so requests sends
+  "Authorization: Basic None:None" -> 401 Bad credentials.
+  Anonymous GET (curl, plain requests) gives 200.
+  Fix A (tested 2026-11-19): development/setup-artifactory-auth.sh
+  <ip> (setup-uefi-dev.sh runs it), once per host, user types own login (runs
+  bin/infra-tools-config auth artifactory on the host; stored in
+  /root/.config/devtools/config.yaml).
+  Fix B (no login): development/seed-bios-knob-tools.sh <ip>
+  (setup-artifactory-auth.sh runs it on hosts without Infra Tools)
+  (puts them in SimicsWorkspace/artifactory/simics-repos/pub/tools/).
+  Check: bios_knobs/<hash>/ must hold *_modified_uefi_dev.bin.

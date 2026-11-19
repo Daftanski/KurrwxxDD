@@ -1,0 +1,58 @@
+Simics - Linux (kernel, driver work)
+====================================
+Scope:   kernel-dev: boot Linux with our kernel, deploy kernel
+         modules (example: ixd)
+Updated: 2026-11-10
+Related: 01-overview.txt, development/kernel-dev/readme.txt
+IPs:     ../../../config.txt only
+
+1. Flow
+-------
+- Full kernel (from kernel tree root):
+    KurrwxxDD/development/update-simics-kernel.sh <host ip>
+  Copies kernel-dev to the host, takes the image .config, builds,
+  installs bzImage + modules into the dev disk image, restarts
+  Simics.
+- "modprobe: FATAL: Module loop not found" on some hosts: harmless.
+
+2. Guest facts
+--------------
+- Login root. Boot ~5 min.
+- eth0 bridged to the lab LAN (sim_tap1 -> sim_br0), IP by DHCP:
+    grep -a "eth0: leased" /root/SimicsWorkspace/*.log
+  Guest MAC = first MAC in /root/SimicsWorkspace/vm1.sh.
+- Disk NOT persistent: files copied to the guest are lost on
+  restart. Never use vm1.sh (boots the CI image, not ours).
+- ssh keys change: ssh-keygen -R <ip>, then
+  ssh -o StrictHostKeyChecking=accept-new.
+- Our kernel: uname -r ends with "+".
+- /mnt/image_cache is a symlink to CRAFF/ after a CI update;
+  kernel-dev core/setup.sh makes it a dir of links again.
+
+3. One module only (kernel tree + .config match the running kernel)
+-------------------------------------------------------------------
+  make -j$(nproc)            (one .ko alone may fail modpost)
+  scp <module>.ko root@<guest>:/lib/modules/<uname -r>/kernel/<path>/
+  guest: rmmod <module>, then modprobe <module>
+         (dyndbg="format XX +p" for debug prints)
+  Dependencies changed (e.g. libie for ixd): unload users first,
+  copy all .ko, depmod -a, load back. Lost on restart.
+
+4. PFD vs PFP on the guest (ixd)
+--------------------------------
+            PFD                          PFP
+  PCI       1 PF 04:00.0                 8 PFs 04:00.0-7
+  devlink   1 PF, 8 aux ports            8 PFs, 1 aux port each
+            (ixd.eth.0-7 = eth1..eth8)
+  package   one download                 one PF takes the lock,
+                                         others wait
+
+5. Example: ixd subfunction (SF)
+--------------------------------
+  devlink port add pci/<pf> flavour pcisf pfnum 0 sfnum 11
+  devlink port function set pci/<pf>/<port> state active
+  ip link set <uplink> up      (first, else repr open = EBUSY)
+  ip link set <repr> up
+  No slow-path traffic in Simics: check binding with kprobes,
+  kernel-dev/misc/sf-toggle-trace.sh (run on the guest).
+  Theory: ../../../.notes/00-theory/07-sf-textbook.txt.

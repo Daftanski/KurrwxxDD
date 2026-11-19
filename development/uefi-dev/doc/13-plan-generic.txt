@@ -1,0 +1,175 @@
+Generic driver tests - use the same suite for other UEFI drivers
+================================================================
+Scope:   development/uefi-dev/misc (lib.sh, tests/, tools/nictest) made
+         usable for any UEFI driver, any UEFI NIC driver, other
+         platforms. Design only, nothing done yet.
+Updated: 2026-10-30
+Related: 10-plan-driver.txt (levels L0-L9)
+         11-results-driver.txt
+         02-test-guide.txt
+         ../misc/readme.txt
+
+
+1. Goal
+-------
+Today every test assumes: the CNIC driver E4999X10.EFI, 8 ports, Simics,
+fixed MACs and tap names, one console port. Goal: run the same tests on
+    - another NIC driver (other Intel UEFI UNDI, edk2 E1000/virtio-net)
+    - a non-network driver (only the driver model tests)
+    - another platform (real board with a serial console + host NICs)
+by changing ONE profile file, not the tests.
+
+
+2. Three classes of tests
+-------------------------
+    A  any UEFI driver (UEFI driver model). Needs: image name, how
+       many controllers / children.
+    B  any UEFI NIC driver (NII/UNDI, SNP, network stack). Needs also:
+       ports, MACs, host side of each port.
+    C  this driver only (HII form content, FMP images, FW log
+       messages, SEM rules, diag PCDs).
+
+Class of each test (and plan level, 10-plan-driver.txt):
+
+    test / tool part        class  level
+    load                    A      L1.1   (MAC check: B)
+    protocols               A+B    L1.2   (list of protocols per handle
+                                           = profile)
+    identity                A+C    L1.3   (version coding is C)
+    driver-log              C      L1.4   (error patterns = profile)
+    load2                   A      L1.5
+    bind, child, stress     A      L3.x   (ping after: B)
+    unload, leak            A      L3.2, L3.8
+    diag                    A      L2.2   (expected results = profile)
+    hii                     C      L2.7   (form 0x200 fields)
+    nictest cn2 health ver  A      L2.1, L2.3, L2.10
+    nictest aip nii snp snpf B     L2.4, L2.6, L4.6-L4.8
+    nictest fmp             A      L2.5   (only if the driver has FMP)
+    net suite               B      L4.x, L6.x
+    pxe, http-boot          B      L6.1, L6.2
+
+
+3. What is tied to CNIC today (approximate lines)
+-------------------------------------------------
+3.1 Platform (Simics) - misc/lib.sh
+    lib.sh:6     DEV=/root/SimicsWorkspace/...   host path
+    lib.sh:7     LOG=$DEV/logs/uefi_serial.log    console log file
+    lib.sh:34    telnet localhost 33441, "fs1:"   console + USB disk
+    restart.sh   Simics restart (other platform: power cycle script)
+3.2 Device - misc/lib.sh
+    lib.sh:8     DRIVER=E4999X10.EFI (already an env var)
+    lib.sh:9     ALL_PORTS="0 1 2 3 4 5 6 7"
+    lib.sh:15-20 tap names cnic_tap_0_P, eth<P+1>, IP plan, MAC
+                 0A:0P:00:08:03:18
+    lib.sh:128   HII_MAIN_FORM=0x200
+3.3 Driver - tests
+    load.sh:14, identity.sh:17,28   name "Intel(R) CNIC Driver"
+    protocols.sh:32                 FMP on exactly 1 child
+    driver-log.sh:4-5               SEM / VSI / virtchnl patterns
+    unload.sh:34                    "SEM del" check
+    hii.sh                          field list of form 0x200
+    diag.sh                         -e expected Success, -m Unsupported
+    nictest.sh:37                   "CNIC" in names
+    port-isolation.sh:29            tap name pattern
+3.4 nictest.efi
+    NicTest.c:28   default driver name part L"CNIC" (arg 2 overrides)
+    FindDriver     children = ALL NII 3.1 handles in the system. Wrong
+                   with 2 NIC drivers: must be the handles our driver
+                   opened BY_CHILD_CONTROLLER (OpenProtocolInformation
+                   on the controller's PciIo / DevicePath).
+    TestSnp        maxpacket 1500 / header 14 checked by the script,
+                   not the app (good: stays generic).
+
+
+4. Design: profile files
+------------------------
+4.1 Two files, chosen by env vars (defaults = today):
+
+    misc/platform/<name>.sh      PLATFORM=simics-cnic
+        DEV LOG CONSOLE (telnet host port) SHELL_FS (fs1:)
+        RESTART (command) TAP_PREFIX
+    misc/profile/<driver>.sh     PROFILE=cnic
+        DRIVER            E4999X10.EFI
+        DRIVER_NAME_RE    'Intel\(R\) CNIC Driver [0-9.]+'
+        NAME_PART         CNIC              (nictest arg 2)
+        ALL_PORTS         "0 1 2 3 4 5 6 7"
+        CHILDREN          8                 (0 = no children)
+        FEATURES          "nii snp aip hii fmp diag health net pxe"
+        mac() eth() tap() uefi_ip() host_ip()
+        IMAGE_PROTOCOLS   list for protocols.sh (name:count)
+        CHILD_PROTOCOLS   list for protocols.sh
+        FMP_CHILDREN      1
+        DIAG_EXPECT       "s=Success e=Success m=Unsupported"
+        LOG_ERRORS LOG_INFO              (driver-log.sh)
+        VERSION_DECODE    function: hex version -> X.Y.Z (or empty)
+        HII_MAIN_FORM, HII_FIELDS        (hii.sh, class C)
+
+    lib.sh line 1: source platform, then profile. Tests use only the
+    variables. Today's values move into platform/simics-cnic.sh and
+    profile/cnic.sh, so nothing changes for CNIC.
+
+4.2 Skips. New helper "need <feature>": if the feature is not in
+    FEATURES, print "SKIP <test> (<feature>)" and exit 0.
+    run-tests.sh counts SKIP lines separately. Example: a storage
+    driver profile has no "nii": the net suite and nictest aip/nii/snp
+    skip; load/bind/stress/leak/cn2/health/ver still run.
+
+4.3 Class C tests stay, but named per driver:
+    tests/func/hii.sh needs "hii-cnic" in FEATURES, or move to
+    tests/cnic/. Keep A/B tests free of driver words.
+
+4.4 nictest.efi for any driver:
+    - children from OpenProtocolInformation (3.4), not from NII.
+    - aip / nii / snp / snpf / fmp: skip a child with no such protocol
+      ("NICTEST <cmd> <i> protocol status=Unsupported"); the script
+      decides with FEATURES whether that is a FAIL.
+    - no expected values inside the app. It prints facts; the
+      script and profile judge.
+    - name: maybe "drvtest.efi" once it is generic.
+
+
+5. Steps (order)
+----------------
+    1. Move today's values to platform/simics-cnic.sh and
+       profile/cnic.sh; lib.sh sources them. Run the full suite:
+       results must be the same as before (no-change refactor).
+    2. Replace driver words in A/B tests with profile variables
+       (3.3). Add "need". Run again.
+    3. nictest: children by OpenProtocolInformation. Run nictest.sh.
+    4. Second profile on Simics with a driver that is already there,
+       e.g. the BIOS built-in NIC driver if Simics has one, or edk2
+       VirtioNetDxe / E1000 if a model exists (OPEN: check the Simics
+       target for other NICs). Run class A and B. Expected: FAIL
+       lines show where our tests still assume CNIC.
+    5. Non-network profile (e.g. a dummy driver from edk2 or a USB
+       driver loaded from the Shell) to prove class A alone.
+    6. Platform file for a real board (serial over IPMI SOL / USB
+       serial, USB stick instead of usb-drive/). Only if needed.
+    7. Doc: test guide section "Testing another driver".
+
+
+6. Risks / open
+---------------
+- Shell output differs between BIOS versions (column widths, colors,
+  "drivers" format). Parsers already use " +" and strip ANSI; still
+  check on a new BIOS.
+- Another NIC driver may not create one child per port, or may put
+  the MAC node elsewhere in the device path.
+- Leak limits (16 pages) depend on the platform; move to profile.
+- The leak residue of the network stack (10-plan-driver.txt
+  11.) will show for ANY NIC driver: good control for L11.1.
+- Class C tests can hide in A/B tests as "small" checks (e.g. SEM
+  del in unload.sh). Review each test once in step 2.
+
+
+7. Checklist
+------------
+[ ] 1 platform + profile files, same results
+[ ] 2 tests use profile variables, "need" + SKIP
+[x] 3 nictest children by OpenProtocolInformation (2026-10-30;
+      found a 2nd NIC on Simics: BIOS driver at PciRoot(0)/Pci(7,0)
+      = candidate for the 2nd profile, step 4)
+[ ] 4 second NIC driver profile
+[ ] 5 non-network profile
+[ ] 6 real board platform (optional)
+[ ] 7 test guide section

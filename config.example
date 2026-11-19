@@ -1,0 +1,9 @@
+# Copy to config.txt (not in git) and fill in. Key=value, one per line.
+# n = host number. Role: first word = LAVA tag (lowercase), rest = note.
+
+host-ip-1=192.0.2.11
+host-role-1=PFD (export PFP=FALSE)
+host-ip-2=192.0.2.12
+host-role-2=PFP (export PFP=TRUE)
+
+workstation-ip=192.0.2.10

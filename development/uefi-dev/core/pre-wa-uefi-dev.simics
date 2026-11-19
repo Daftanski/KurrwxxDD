@@ -1,0 +1,16 @@
+# -----------------------------------------------------------------------------
+# pre-wa-uefi-dev.simics
+#
+# Runs the original pre-cnic-shared-workarounds.simics, then adds one extra
+# step: our UEFI dev preset. Called when starting via launch-simics.sh
+# (vpc_launch_uefi_dev.simics points $pre_wa_script here).
+# -----------------------------------------------------------------------------
+
+# 1) Run the original pre-workaround script unchanged.
+#    It sets up $presets, e.g. ["presets/cnic-fuse-nic-mode", ...].
+run-command-file (lookup-file "pre-cnic-shared-workarounds.simics")
+
+# 2) Add our preset to that list. It sets the BIOS knobs for UEFI development.
+#    %script% = folder of this file (development/uefi-dev/core/), so the path works from here.
+#    Later, host_svl_cnic_nic.simics passes $presets to load-target.
+$presets += [(lookup-file "%script%/uefi-dev.preset.yml")]
