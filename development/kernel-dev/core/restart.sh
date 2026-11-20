@@ -5,6 +5,12 @@ trap 'echo "ABORT. Error on line $LINENO (exit code $?)"' ERR
 DEV=/root/SimicsWorkspace/development/kernel-dev
 LOGS=$DEV/logs
 
+# --- Step 0: check before killing anything (launch-simics.sh runs in the background)
+if [ ! -e /mnt/image_cache/development_disk_image.craff ]; then
+    echo "ERROR: /mnt/image_cache/development_disk_image.craff missing, run core/setup.sh" >&2
+    exit 1
+fi
+
 # --- Step 1: stop old Simics; only one can run at a time (shared TAP devices)
 killall -9 simics 2> /dev/null || true
 while pgrep -x simics > /dev/null; do sleep 1; done

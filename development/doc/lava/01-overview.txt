@@ -2,7 +2,7 @@ LAVA - overview
 ===============
 Scope:   LAVA test scheduler on the workstation; runs automated tests
          on Simics hosts (any setup), later real HW
-Updated: 2026-11-12
+Updated: 2026-11-18
 Related: 02-usage.txt, 03-maintenance.txt,
          ../../../.notes/00-theory/06-test-scheduler-lava.txt (what LAVA is),
          ../simics/01-overview.txt
@@ -19,7 +19,8 @@ IPs:     ../../../config.txt only
 - One device per Simics host, type "ssh". The job logs in as root,
   runs one command, each PASS/FAIL line becomes a LAVA test case.
 - One job at a time per device; more jobs wait in the queue.
-- Web UI: http://<workstation-ip>/, user admin, password in
+- Web UI: http://<workstation-ip>:<DC_LAVA_HTTP_PORT> (.env; 8090 here,
+  80 is taken by nginx), user admin, password in
   ~/lava/.env (DC_LAVA_ADMIN_PASSWORD). API token: ~/lava/svl/token.env.
 
 2. Files (~/lava)
@@ -40,14 +41,15 @@ only in ~/lava.
     devices/             device template; add-device.sh <n> fills in
                          the IP from config.txt (02-usage.txt 3.)
     jobs/*.yaml          job templates
+    lava-test.sh         submit + wait + short summary (AI and people)
     submit.sh, results.sh   02-usage.txt
   New LAVA server: clone upstream, then link the files above.
 
 3. Test runner on the host
 --------------------------
-- uefi-dev: misc/lava-run.sh = run-tests.sh + one LAVA test case per
-  step (<nn>-<step>) and per check (<nn>-<step>.<check>). Deployed
-  with setup-uefi-dev.sh.
-- kernel-dev: no runner yet. A new setup needs its own
-  misc/lava-run.sh with the same output rule (PASS/FAIL lines,
-  "== <step>", "== failed: <list>").
+- <setup>-dev/misc/lava-run.sh (same file in uefi-dev and kernel-dev)
+  = run-tests.sh + one LAVA test case per step (<nn>-<step>) and per
+  check (<nn>-<step>.<check>). Deployed with setup-<setup>-dev.sh.
+- Job template jobs/simics.yaml: SETUP (uefi|kernel) picks the setup.
+- run-tests.sh output rule: PASS/FAIL lines, "== <step>",
+  "== failed: <list>". run-tests.sh list = catalog (line 2 of tests).

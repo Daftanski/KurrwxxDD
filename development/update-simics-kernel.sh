@@ -3,7 +3,7 @@ set -eo pipefail
 trap 'echo "ABORT. Error on line $LINENO (exit code $?)"' ERR
 
 if [[ -z ${1:-} ]]; then
-    echo "Usage: [JOBS=<n>] $0 <ip>"
+    echo "Usage: [JOBS=<n>] [KSFT_TARGETS=\"...\"] $0 <ip>   (KSFT_TARGETS=\"\": no selftests)"
     exit 1
 fi
 
@@ -34,6 +34,13 @@ tar czf "$ARCHIVE" arch/x86/boot/bzImage -C "$MODULES" lib/modules
 echo "Sending $ARCHIVE to $SIMICS_HOST:$DEV/image"
 scp "$ARCHIVE" "$SIMICS_HOST:$DEV/image/"
 
-ssh "$SIMICS_HOST" "$DEV/core/install.sh"
+# Driver selftests from this same tree, so they match the kernel (KSFT_TARGETS="" skips them).
+if [ -n "${KSFT_TARGETS-x}" ]; then
+    "$SCRIPT/build-kselftest.sh" "$1"
+else
+    ssh "$SIMICS_HOST" "rm -f $DEV/image/kselftest_output.tar.gz"
+fi
 
-ssh "$SIMICS_HOST" "$DEV/core/restart.sh"
+# Install + restart touch the running Simics: only inside a LAVA job (queued).
+echo "Copied. Install and test through LAVA, e.g.:"
+echo "  ~/lava/svl/lava-test.sh kernel <tag> install boot ixd"

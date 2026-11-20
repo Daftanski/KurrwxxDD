@@ -1,23 +1,32 @@
 LAVA - usage
 ============
 Scope:   submit jobs, read results, nightly runs, devices
-Updated: 2026-11-12
+Updated: 2026-11-18
 Related: 01-overview.txt, 03-maintenance.txt
 
 1. Submit and read (on the workstation, ~/lava/svl)
 ---------------------------------------------------
-  ./submit.sh [PFD|PFP] [step ...]      prints the job id
-      ./submit.sh PFD all
-      ./submit.sh PFP restart ping unload
-  ./results.sh [--wait] <job id>        state, failed cases, FAIL lines
-- Steps = run-tests.sh steps (../simics/03-uefi.txt 3.).
-- Job template: jobs/simics-ping.yaml (submit.sh fills job name,
-  STEPS, PFP).
+  ./lava-test.sh <uefi|kernel> <tag> <step ...>   submit, wait, summary
+      ./lava-test.sh kernel pfp install boot ixd
+      ./lava-test.sh uefi pfd restart load ping
+      ./lava-test.sh kernel pfp mtu:0,9000           test with args
+  ./lava-test.sh wait <job id>      summary of a submitted job
+  ./lava-test.sh list <uefi|kernel> test catalog (local)
+  Summary: PASS / FAIL / ERROR, FAIL lines, plain log logs/<id>.txt.
+  Exit 0 / 1 / 2.
+  ./submit.sh <uefi|kernel> <tag> [step ...]  only submit, prints the id
+  ./results.sh [--wait] <job id>    LAVA test cases of a job
+- tag = device tag = role in config.txt (pfd, pfp); pfp sets PFP=TRUE.
+- Steps = run-tests.sh steps: test name, name:arg,arg, restart,
+  kernel install, suites (run-tests.sh list).
+- Job template: jobs/simics.yaml (submit.sh fills job name, tags,
+  SETUP, STEPS, PFP).
 - Web UI: Scheduler > Jobs; a job's "Results" tab lists test cases.
 
 2. Nightly
 ----------
-  crontab of the workstation user: 01:00 PFD all, 01:05 PFP all.
+  crontab of the workstation user (none set up yet), e.g.
+    0 1 * * * ~/lava/svl/lava-test.sh kernel pfp full >> ~/lava/svl/nightly.log 2>&1
   Output: svl/nightly.log. Change: crontab -e.
 
 3. Devices
@@ -56,4 +65,8 @@ Related: 01-overview.txt, 03-maintenance.txt
 
 5. Open
 -------
-- No Linux (kernel-dev) job yet.
+- Server setup on this workstation (2026-11-18): Docker Hub not
+  reachable by the daemon (no proxy, needs root). Images fetched with
+  moby contrib/download-frozen-image-v2.sh (curl, user proxy) +
+  docker load; compose v2 plugin in ~/.docker/cli-plugins.
+  Then: docker compose up -d --pull never.
