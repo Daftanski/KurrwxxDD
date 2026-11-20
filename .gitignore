@@ -15,3 +15,6 @@ development/uefi-dev/core/usb-drive.img
 # Built by misc/tools/*/build.sh
 development/uefi-dev/core/usb-drive/*
 !development/uefi-dev/core/usb-drive/test.txt
+
+# Python
+__pycache__/

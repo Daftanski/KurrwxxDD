@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+"""kdev - run Simics tests through LAVA and watch them live.
+
+  kdev                          interactive: pick tests from the catalog, run, watch
+  kdev run [opts] <step ...>    run steps (tests, suites, name:arg,arg), watch live
+  kdev list [kernel|uefi]       test catalog
+  kdev status                   hosts, running job (current step, pass/fail so far), queue, last jobs
+  kdev watch [<job>]            live view of a job (default: the running / last one)
+  kdev log <job> [<step>]       plain log of a job (or of one step)
+  kdev cancel <job>             cancel a job
+
+run options: -s kernel|uefi (default kernel)  -t <tag> (default: the only one)
+             -v (show PASS/INFO lines too)    --no-deploy (do not copy the tests to the host)
+Ctrl-C while watching only detaches; the job goes on (kdev watch <job>).
+Exit code of run/watch: 0 PASS, 1 FAIL, 2 ERROR (job broken / canceled).
+"""
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+import yaml
+
+HERE = os.path.dirname(os.path.realpath(__file__))           # .../development
+REPO = os.path.dirname(HERE)
+SVL = os.path.expanduser(os.environ.get("LAVA_SVL", "~/lava/svl"))
+LOGS = os.path.join(SVL, "logs")
+CONFIG = os.environ.get("CONFIG", os.path.join(REPO, "config.txt"))
+
+TTY = sys.stdout.isatty()
+COLOR = TTY and not os.environ.get("NO_COLOR")
+
+
+def c(code, s):
+    return f"\033[{code}m{s}\033[0m" if COLOR else s
+
+
+RED, GREEN, YELLOW, DIM, BOLD, CYAN = "31", "32", "33", "2", "1", "36"
+
+
+# --- LAVA API ----------------------------------------------------------------------
+def env():
+    e = {}
+    with open(os.path.join(SVL, "token.env")) as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.strip().split("=", 1)
+                e[k] = v
+    return e["LAVA_TOKEN"], e.get("LAVA_URL", "http://localhost").rstrip("/")
+
+
+TOKEN, URL = env()
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def api(path, data=None, method=None, raw=False):
+    req = urllib.request.Request(f"{URL}/api/v0.2/{path}", method=method,
+                                 data=json.dumps(data).encode() if data is not None else None,
+                                 headers={"Authorization": f"Token {TOKEN}",
+                                          "Content-Type": "application/json"})
+    with OPENER.open(req, timeout=60) as r:
+        body = r.read().decode()
+    return body if raw else (json.loads(body) if body.strip() else {})
+
+
+def job(jid):
+    return api(f"jobs/{jid}/")
+
+
+def log_entries(jid, start=0):
+    """LAVA log = YAML list of {dt, lvl, msg}; ?start=N returns lines from N on."""
+    try:
+        return yaml.safe_load(api(f"jobs/{jid}/logs/?start={start}", raw=True)) or []
+    except Exception:
+        return []
+
+
+def tags():
+    return {t["id"]: t["name"] for t in api("tags/?limit=100")["results"]}
+
+
+def devices():
+    names = tags()
+    out = []
+    for d in api("devices/?limit=100")["results"]:
+        if d.get("device_type") != "ssh" and not d["hostname"].startswith("simics"):
+            continue
+        d["tagnames"] = [names.get(t, str(t)) for t in d.get("tags", [])]
+        out.append(d)
+    return out
+
+
+# --- Repo side ---------------------------------------------------------------------
+def config_hosts():
+    """{tag: [ip, ...]} from config.txt (role first word, lowercase = tag)."""
+    ips, roles = {}, {}
+    if os.path.exists(CONFIG):
+        for line in open(CONFIG):
+            m = re.match(r"host-(ip|role)-(\d+)=(.*)", line.strip())
+            if m:
+                (ips if m[1] == "ip" else roles)[m[2]] = m[3]
+    out = {}
+    for n, ip in ips.items():
+        tag = roles.get(n, "").split(" ")[0].lower()
+        out.setdefault(tag, []).append(ip)
+    return out
+
+
+def run_tests(setup, *args):
+    r = subprocess.run(["bash", os.path.join(HERE, f"{setup}-dev/misc/run-tests.sh"), *args],
+                       capture_output=True, text=True)
+    return r.stdout
+
+
+def catalog(setup):
+    """[(name, args, what, time)], {suite: [steps]}, extra step help line."""
+    tests, suites, extra = [], {}, ""
+    out = run_tests(setup, "list").splitlines()
+    i = 0
+    while i < len(out):
+        line = out[i]
+        if line.startswith("steps:"):
+            extra = line[len("steps:"):].strip()
+        elif line.startswith("suites:"):
+            text = line[len("suites:"):]
+            while i + 1 < len(out) and out[i + 1].startswith(" "):
+                i += 1
+                text += " | " + out[i].strip()
+            for part in text.split("|"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    suites[k.strip()] = re.sub(r"\(.*?\)", "", v).split()
+        else:
+            m = re.match(r"(\S+)\.sh(.*?)\s{2,}(.*)", line)
+            if m:
+                t = re.search(r"Time: ([^.]*(?:\.\d+[^.]*)?)\.", m[3])
+                what = re.split(r" Needs: ", m[3])[0]
+                tests.append((m[1], m[2].strip(), what, t[1] if t else "?"))
+        i += 1
+    return tests, suites, extra
+
+
+def pick_tag(setup, tag):
+    if tag:
+        return tag.lower()
+    have = sorted({t for d in devices() for t in d["tagnames"] if d["health"] != "Retired"})
+    if len(have) == 1:
+        return have[0]
+    sys.exit(f"several device tags {have}: choose one with -t")
+
+
+def deploy(setup, tag):
+    if setup != "kernel":
+        print(c(DIM, "  (uefi: deploy with development/setup-uefi-dev.sh <ip> when tests changed)"))
+        return
+    for ip in config_hosts().get(tag, []):
+        r = subprocess.run([os.path.join(HERE, "setup-kernel-dev.sh"), ip, "copy"],
+                           capture_output=True, text=True)
+        if r.returncode:
+            sys.exit(f"deploy to {ip} failed:\n{r.stdout}{r.stderr}")
+        print(c(DIM, f"  tests copied to host {ip}"))
+
+
+def submit(setup, tag, steps):
+    r = subprocess.run([os.path.join(SVL, "submit.sh"), setup, tag, *steps],
+                       capture_output=True, text=True)
+    if r.returncode or not r.stdout.strip().isdigit():
+        sys.exit(f"submit failed: {r.stdout}{r.stderr}".strip())
+    return int(r.stdout.strip())
+
+
+# --- Log parsing -------------------------------------------------------------------
+def ts(s):
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+class Run:
+    """State of a job built from its log lines (incrementally)."""
+
+    def __init__(self, planned):
+        self.planned = planned            # expected steps (may be [] if unknown)
+        self.steps = []                   # dict(name, start, end, pass, fail, fails)
+        self.verdict = None               # "== failed: ..." text
+        self.errors = []
+        self.lines = []                   # plain log (target lines + LAVA errors)
+        self.n = 0                        # log entries consumed
+
+    @property
+    def cur(self):
+        return self.steps[-1] if self.steps and self.verdict is None else None
+
+    def feed(self, entries, on_event=None):
+        for e in entries:
+            self.n += 1
+            m, lvl = e.get("msg"), e.get("lvl")
+            if not isinstance(m, str):
+                continue
+            if lvl in ("error", "exception"):
+                self.errors.append(m)
+                self.lines.append(f"LAVA-{lvl} {m}")
+                continue
+            if lvl != "target" or m.startswith("<LAVA_"):
+                continue
+            self.lines.append(m)
+            t = ts(e["dt"])
+            if m.startswith("== failed:"):
+                if self.steps:
+                    self.steps[-1]["end"] = t
+                self.verdict = m[len("== failed:"):].strip()
+                on_event and on_event("end", None, m)
+            elif m.startswith("== "):
+                if self.steps:
+                    self.steps[-1]["end"] = t
+                    on_event and on_event("step_end", self.steps[-1], m)
+                self.steps.append(dict(name=m[3:], start=t, end=None, ok=0, bad=0, fails=[]))
+                on_event and on_event("step", self.steps[-1], m)
+            elif self.steps and (m.startswith("PASS ") or m.startswith("FAIL ")):
+                s = self.steps[-1]
+                if m.startswith("PASS "):
+                    s["ok"] += 1
+                else:
+                    s["bad"] += 1
+                    s["fails"].append(m)
+                on_event and on_event("check", s, m)
+            elif self.steps:
+                on_event and on_event("other", self.steps[-1], m)
+
+    def step_failed(self, s):
+        if self.verdict is None:
+            return s["bad"] > 0
+        return f" {s['name']} " in f" {self.verdict} " or s["bad"] > 0
+
+    def totals(self):
+        return sum(s["ok"] for s in self.steps), sum(s["bad"] for s in self.steps)
+
+
+def fmt_dur(sec):
+    sec = int(max(sec, 0))
+    return f"{sec // 60}m{sec % 60:02d}s" if sec >= 60 else f"{sec}s"
+
+
+# --- Live view ---------------------------------------------------------------------
+def watch(jid, verbose=False, planned=None):
+    j = job(jid)
+    desc = j["description"]
+    if planned is None:
+        m = re.match(r"(kernel|uefi) \S+: (.*)", desc)
+        planned = run_tests(m[1], "expand", *m[2].split()).split() if m else []
+    run = Run(planned)
+    total = len(planned)
+    status = {"text": ""}
+
+    def out(line=""):
+        if TTY and status["text"]:
+            sys.stdout.write("\r\033[K")
+        print(line)
+        status["text"] = ""
+
+    def show_status(text):
+        if TTY:
+            sys.stdout.write("\r\033[K" + text[:max(20, os.get_terminal_size().columns - 1)])
+            sys.stdout.flush()
+            status["text"] = text
+
+    def step_line(s):
+        n = run.steps.index(s) + 1
+        d = fmt_dur(((s["end"] or now_lava()) - s["start"]).total_seconds())
+        bad = run.step_failed(s)
+        mark = c(RED, "✘ FAIL") if bad else c(GREEN, "✔ PASS")
+        out(f"  {mark} [{n}/{total or '?'}] {s['name']}  {s['ok']} passed, {s['bad']} failed, {d}")
+
+    def event(kind, s, m):
+        if kind == "step":
+            n = len(run.steps)
+            out(c(BOLD, f"▶ [{n}/{total or '?'}] {s['name']}") + c(DIM, f"  started {s['start'].astimezone():%H:%M:%S}"))
+        elif kind == "step_end":
+            step_line(s)
+        elif kind == "check":
+            if m.startswith("FAIL "):
+                out("    " + c(RED, m[:300]))
+            elif verbose:
+                out("    " + c(GREEN, m[:300]))
+        elif kind == "other" and verbose and m.strip():
+            out("    " + c(DIM, m[:300]))
+        elif kind == "end":
+            if run.steps and run.steps[-1]["end"]:
+                step_line(run.steps[-1])
+
+    def now_lava():
+        return dt.datetime.now(dt.timezone.utc)
+
+    print(c(BOLD, f"job {jid}: {desc}") + c(DIM, f"  ({URL}/scheduler/job/{jid})"))
+    if planned:
+        print(c(DIM, f"  steps: {' '.join(planned)}"))
+    last_state = None
+    try:
+        while True:
+            j = job(jid)
+            state = j["state"]
+            if state in ("Submitted", "Scheduling", "Scheduled") and state != last_state:
+                ahead = [q for q in api("jobs/?state=Running&limit=50")["results"]
+                         if q.get("actual_device")] if state == "Submitted" else []
+                who = f" (device busy: job {ahead[0]['id']} {ahead[0]['description']})" if ahead else ""
+                out(c(YELLOW, f"  {state.lower()}{who}"))
+            last_state = state
+            run.feed(log_entries(jid, run.n), event)
+            if state == "Finished" or j["health"] == "Canceled":
+                run.feed(log_entries(jid, run.n), event)
+                break
+            if state == "Running":
+                ok, bad = run.totals()
+                s = run.cur
+                start = ts(j["start_time"]) if j.get("start_time") else now_lava()
+                head = (f"[{len(run.steps)}/{total or '?'}] {s['name']} "
+                        f"{fmt_dur((now_lava() - s['start']).total_seconds())}"
+                        if s else "starting")
+                show_status(c(CYAN, f"⏳ {head}") + f" | {c(GREEN, str(ok))} passed {c(RED if bad else DIM, str(bad))} failed"
+                            + c(DIM, f" | job {fmt_dur((now_lava() - start).total_seconds())}"))
+            time.sleep(2 if state == "Running" else 5)
+    except KeyboardInterrupt:
+        out()
+        print(c(YELLOW, f"detached, job {jid} goes on:  kdev watch {jid}   |   kdev cancel {jid}"))
+        return 130
+    out()
+    return summary(jid, run, job(jid))
+
+
+def summary(jid, run, j):
+    os.makedirs(LOGS, exist_ok=True)
+    path = os.path.join(LOGS, f"{jid}.txt")
+    with open(path, "w") as f:
+        f.write("\n".join(run.lines) + "\n")
+    ok, bad = run.totals()
+    dur = fmt_dur((ts(j["end_time"]) - ts(j["start_time"])).total_seconds()) if j.get("end_time") and j.get("start_time") else "?"
+    if run.verdict == "none":
+        res, rc = c(GREEN, "PASS"), 0
+    elif run.verdict is not None:
+        res, rc = c(RED, "FAIL"), 1
+    else:
+        res, rc = c(RED, f"ERROR ({j['health']})"), 2
+    print(c(BOLD, f"job {jid} {res}") + f"  {ok} checks passed, {bad} failed, {dur}  ({j['description']})")
+    width = max([len(s["name"]) for s in run.steps] + [4])
+    done = [s["name"] for s in run.steps]
+    for s in run.steps:
+        d = fmt_dur(((s["end"] or s["start"]) - s["start"]).total_seconds())
+        r = c(RED, "FAIL") if run.step_failed(s) else c(GREEN, "PASS")
+        print(f"  {r}  {s['name']:<{width}}  {s['ok']:>4} passed {s['bad']:>3} failed  {d:>7}")
+    rest = list(run.planned)
+    for name in done:
+        if name in rest:
+            rest.remove(name)
+    for name in rest:
+        print(f"  {c(DIM, 'skip')}  {name:<{width}}  {c(DIM, 'not run')}")
+    fails = [(s["name"], f) for s in run.steps for f in s["fails"]]
+    if fails:
+        print("  failed checks:")
+        for n, f in fails[:30]:
+            print(f"    {n}: {c(RED, f[:250])}")
+        if len(fails) > 30:
+            print(f"    ... {len(fails) - 30} more")
+    if rc == 2:
+        for e in run.errors[-4:]:
+            print("  " + c(RED, e[:300]))
+    print(c(DIM, f"  log: {path}   (one step: kdev log {jid} <step>)"))
+    return rc
+
+
+# --- Commands ----------------------------------------------------------------------
+def cmd_list(setup):
+    tests, suites, extra = catalog(setup)
+    print(c(BOLD, f"{setup} tests") + c(DIM, "  (name [args]: what - time)"))
+    for name, args, what, t in tests:
+        print(f"  {c(CYAN, name):<24} {c(DIM, args):<30} {what[:110]}" + c(DIM, f" - {t}"))
+    print(c(BOLD, "suites"))
+    for k, v in suites.items():
+        print(f"  {c(CYAN, k):<24} {' '.join(v)}")
+    if extra:
+        print(c(BOLD, "other steps") + f"  {extra}")
+
+
+def cmd_status():
+    devs = devices()
+    print(c(BOLD, "hosts"))
+    hosts = config_hosts()
+    for d in devs:
+        tag = ",".join(d["tagnames"])
+        ips = ",".join(ip for t in d["tagnames"] for ip in hosts.get(t, []))
+        st = c(GREEN, d["state"]) if d["state"] == "Idle" else c(YELLOW, d["state"])
+        print(f"  {d['hostname']:<10} tag {tag:<5} {ips:<16} {st} ({d['health']})")
+    running = api("jobs/?state=Running&limit=20")["results"]
+    queued = api("jobs/?state=Submitted&limit=20")["results"]
+    for j in running:
+        planned = []
+        m = re.match(r"(kernel|uefi) \S+: (.*)", j["description"])
+        if m:
+            planned = run_tests(m[1], "expand", *m[2].split()).split()
+        run = Run(planned)
+        run.feed(log_entries(j["id"]))
+        ok, bad = run.totals()
+        s = run.cur
+        now = dt.datetime.now(dt.timezone.utc)
+        print(c(BOLD, f"running: job {j['id']}") + f"  {j['description']}  "
+              + c(DIM, f"for {fmt_dur((now - ts(j['start_time'])).total_seconds())}"))
+        for st in run.steps:
+            if st is s:
+                print(f"  {c(CYAN, '⏳')}  {st['name']}  {st['ok']} passed {st['bad']} failed, "
+                      f"{fmt_dur((now - st['start']).total_seconds())} so far")
+            else:
+                r = c(RED, "FAIL") if run.step_failed(st) else c(GREEN, "PASS")
+                print(f"  {r}  {st['name']}  {st['ok']} passed {st['bad']} failed")
+        later = planned[len(run.steps):]
+        if later:
+            print(c(DIM, f"  next: {' '.join(later)}"))
+        print(f"  total so far: {c(GREEN, str(ok))} passed, {c(RED if bad else DIM, str(bad))} failed"
+              + c(DIM, f"   live: kdev watch {j['id']}"))
+    if queued:
+        print(c(BOLD, "queued"))
+        for j in queued:
+            print(f"  job {j['id']}  {j['description']}")
+    if not running and not queued:
+        print(c(DIM, "nothing running or queued"))
+    print(c(BOLD, "last jobs"))
+    for j in api("jobs/?state=Finished&ordering=-id&limit=5")["results"]:
+        res = "?"
+        p = os.path.join(LOGS, f"{j['id']}.txt")
+        if os.path.exists(p):
+            v = [l for l in open(p, errors="replace") if l.startswith("== failed:")]
+            res = (c(GREEN, "PASS") if v and v[-1].strip() == "== failed: none"
+                   else c(RED, "FAIL") if v else c(RED, "ERROR"))
+        elif j["health"] != "Complete":
+            res = c(RED, j["health"])
+        print(f"  job {j['id']:<4} {res:<15} {j['description']}")
+
+
+def cmd_log(jid, step):
+    run = Run([])
+    run.feed(log_entries(jid))
+    if not step:
+        print("\n".join(run.lines))
+        return
+    on = False
+    for line in run.lines:
+        if line.startswith("== "):
+            on = line[3:] == step or line[3:].split(":")[0] == step
+        if on:
+            print(line)
+
+
+def interactive():
+    setup = input(c(BOLD, "setup") + " [kernel/uefi] (kernel): ").strip() or "kernel"
+    tag = pick_tag(setup, None)
+    tests, suites, extra = catalog(setup)
+    items = [(k, " ".join(v), "") for k, v in suites.items()] + [(n, w, t) for n, _, w, t in tests]
+    print(c(BOLD, f"\n{setup} on tag {tag}: pick tests"))
+    for i, (n, w, t) in enumerate(items, 1):
+        kind = c(DIM, "suite ") if i <= len(suites) else "      "
+        print(f"  {i:>2}  {kind}{c(CYAN, n):<22} {w[:90]}" + (c(DIM, f" - {t}") if t else ""))
+    if extra:
+        print(c(DIM, f"  also: {extra}"))
+    raw = input(c(BOLD, "tests") + " (numbers or names, e.g. '3 7' or 'bridge kselftest:0:1'): ").split()
+    steps = []
+    for r in raw:
+        steps.append(items[int(r) - 1][0] if r.isdigit() and 0 < int(r) <= len(items) else r)
+    if not steps:
+        sys.exit("nothing picked")
+    if "restart" not in steps and (input("restart Simics first (fresh guest, ~6 min)? [y/N]: ").strip().lower() == "y"):
+        steps = ["restart", "boot"] + steps
+    return setup, tag, steps
+
+
+def main():
+    if len(sys.argv) == 1:
+        if not sys.stdin.isatty():
+            print(__doc__)
+            return 2
+        setup, tag, steps = interactive()
+        deploy(setup, tag)
+        jid = submit(setup, tag, steps)
+        return watch(jid, planned=run_tests(setup, "expand", *steps).split())
+
+    p = argparse.ArgumentParser(prog="kdev", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd")
+    r = sub.add_parser("run")
+    r.add_argument("-s", "--setup", default="kernel", choices=["kernel", "uefi"])
+    r.add_argument("-t", "--tag")
+    r.add_argument("-v", "--verbose", action="store_true")
+    r.add_argument("--no-deploy", action="store_true")
+    r.add_argument("steps", nargs="+")
+    sub.add_parser("list").add_argument("setup", nargs="?", default="kernel", choices=["kernel", "uefi"])
+    sub.add_parser("status")
+    w = sub.add_parser("watch")
+    w.add_argument("job", nargs="?", type=int)
+    w.add_argument("-v", "--verbose", action="store_true")
+    lg = sub.add_parser("log")
+    lg.add_argument("job", type=int)
+    lg.add_argument("step", nargs="?")
+    sub.add_parser("cancel").add_argument("job", type=int)
+    a = p.parse_args()
+
+    if a.cmd == "run":
+        tag = pick_tag(a.setup, a.tag)
+        if not a.no_deploy:
+            deploy(a.setup, tag)
+        planned = run_tests(a.setup, "expand", *a.steps).split()
+        jid = submit(a.setup, tag, a.steps)
+        return watch(jid, a.verbose, planned)
+    if a.cmd == "list":
+        cmd_list(a.setup)
+    elif a.cmd == "status":
+        cmd_status()
+    elif a.cmd == "watch":
+        jid = a.job
+        if jid is None:
+            r = api("jobs/?state=Running&limit=1")["results"] or api("jobs/?ordering=-id&limit=1")["results"]
+            jid = r[0]["id"]
+        return watch(jid, a.verbose)
+    elif a.cmd == "log":
+        cmd_log(a.job, a.step)
+    elif a.cmd == "cancel":
+        api(f"jobs/{a.job}/cancel/", data={}, method="POST")
+        print(f"job {a.job} cancel requested")
+    else:
+        p.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        pass

@@ -10,7 +10,8 @@
 
 ## Run (from the workstation, through the LAVA queue)
 
-   ~/lava/svl/lava-test.sh kernel <tag> <step ...>
+   kdev run <step ...>        (people: live progress; development/kdev)
+   ~/lava/svl/lava-test.sh kernel <tag> <step ...>   (AI: 3-5 line answer)
    step = test name, name:arg,arg (= tests/name.sh arg arg), restart, install,
           or suite (all, net, feat, driver, full).
      restart  - kill Simics, start it again (boot waits for the guest)

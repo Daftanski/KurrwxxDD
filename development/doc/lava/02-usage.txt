@@ -6,6 +6,26 @@ Related: 01-overview.txt, 03-maintenance.txt
 
 1. Submit and read (on the workstation, ~/lava/svl)
 ---------------------------------------------------
+People: development/kdev (links: ~/.local/bin/kdev, ~/lava/svl/kdev)
+  kdev                          menu: setup, tests (numbers or names),
+                                optional restart first; then run + watch
+  kdev run [-s uefi] [-t tag] [-v] [--no-deploy] <step ...>
+      kdev run bridge                 one test
+      kdev run kselftest bridge:0:1,static
+      kdev run restart boot full      fresh guest + whole suite
+  kdev status    hosts, running job (each step PASS/FAIL so far,
+                 current step + time, next steps), queue, last jobs
+  kdev watch [job]   live view (default: running / last job)
+  kdev log <job> [step]   plain log (one step only)
+  kdev cancel <job>
+  Live view: "> [3/12] step" when a step starts, FAIL lines at once,
+  "PASS/FAIL [3/12] step  n passed, m failed, time" when it ends, a
+  status line (current step, time, totals) on a terminal, at the end a
+  table of all steps (not run = skip) and the failed checks. -v also
+  prints PASS/INFO lines. Ctrl-C detaches only (job goes on).
+  kernel: tests are copied to the host before the job (--no-deploy: not).
+  Exit 0 PASS, 1 FAIL, 2 ERROR. Plain log: logs/<id>.txt.
+AI / scripts (short answer):
   ./lava-test.sh <uefi|kernel> <tag> <step ...>   submit, wait, summary
       ./lava-test.sh kernel pfp install boot ixd
       ./lava-test.sh uefi pfd restart load ping

@@ -1,5 +1,6 @@
 #!/bin/bash
 # Usage: run-tests.sh [step ...]   step = suite, restart, install, a test name, or name:arg,arg (= tests/name.sh arg arg)
+#        run-tests.sh expand <step ...>   only print the resolved steps
 #        run-tests.sh list         catalog: one line per test (args, what, Needs, Changes, Time) + suites
 # Default: all. Run only through LAVA (lava-test.sh kernel ...), never by hand.
 # restart = core/restart.sh (returns at once), boot waits for the guest.
@@ -23,6 +24,11 @@ if [ "$1" = list ]; then
     exit 0
 fi
 
+EXPAND=""
+if [ "$1" = expand ]; then
+    EXPAND=1
+    shift
+fi
 STEPS=""
 for S in ${*:-all}; do
     case $S in
@@ -34,6 +40,11 @@ for S in ${*:-all}; do
         *)      STEPS+=" $S" ;;
     esac
 done
+# expand: print the steps the run would do (suites resolved), one per line.
+if [ -n "$EXPAND" ]; then
+    printf '%s\n' $STEPS
+    exit 0
+fi
 FAILED=""
 
 for S in $STEPS; do

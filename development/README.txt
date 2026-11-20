@@ -18,7 +18,7 @@ First steps on a new workstation:
      <ip> (Linux); both install your ssh key (password asked once).
      UEFI: also asks your Artifactory login once (BIOS knobs).
      Then lava/add-device.sh <n>.
-  4. Run tests: ~/lava/svl/lava-test.sh (doc/lava/02-usage.txt 1.).
+  4. Run tests: ./kdev (ln -s $PWD/kdev ~/.local/bin/kdev), doc/lava/02-usage.txt 1.
 
 setup-uefi-dev.sh <ip>        deploy uefi-dev to a host (+ Artifactory login)
 setup-kernel-dev.sh <ip> [copy]  deploy kernel-dev to a host (copy = files only)
@@ -27,6 +27,8 @@ seed-bios-knob-tools.sh <ip>  BIOS knob tools to host cache, no login
 update-simics-kernel.sh <ip>  build kernel + selftests + copy (run in kernel
                               tree); install = LAVA step "install"
 build-kselftest.sh <ip>       only the driver selftests (run in kernel tree)
+kdev                          run + watch tests: kdev | kdev run <step ...> |
+                              kdev status | kdev watch | kdev log <job> | kdev list
 lava/add-device.sh <n>        add/update LAVA device for host n of config.txt
 uefi-dev/misc/dev/ut-nic-core.sh   nic-core unit tests (dev machine)
 
