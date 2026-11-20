@@ -37,6 +37,8 @@
      gcap_stop <id ...> (one stop call: each guest sleep costs ~30x).
    - Loopback cable (host taps + bridge) runs at the guest's max MTU: jumbo
      frames are not dropped on the host (kselftest ping.py xdp mb needs 9000).
+   - Kernel selftests (kselftest.sh): IPv4 only (F4: no IPv6 ND); skips
+     pause/FEC/qstats/XDP offload (not supported by ixd).
    - A hung guest (driver probe holding rtnl) blocks guest commands for
      minutes: use gt <seconds> "<cmd>" where a test must not wait.
    - First traffic after the first link up since boot can be slow: loop_up waits
@@ -145,6 +147,17 @@
       flow follows, offloaded), SF deleted while bridged (entry gone, rest
       offloaded), uplink nomaster and back, representor down/up (SF carrier
       follows, relearned + offloaded).
+   F11 2026-11-20 LAVA job 49 (CI kernel, PFP, after restart): queues.sh,
+      ethtool -L combined 15 on port 0 -> "Resource temporarily unavailable",
+      then kernel Oops (page fault, write to 0xc00c4) in
+      idpf_ptp_update_phctime_rxq_grp <- idpf_aux_eth_event_handler
+      (PHCTIME_UPDATE) <- ixd_ptp_update_phc_time <- ptp_aux_kworker. Guest
+      hung (no ssh), job canceled after 48 min. The PHCTIME_UPDATE case
+      (idpf_eth.c ~437) walks vport->dflt_qv_rsrc.rxq_grps without
+      vport_ctrl_lock while the queue reconfig reallocates them; the next
+      case (TX_TS_LATCHES_UPDATED) takes the lock for this exact race.
+      Intermittent: queues.sh passed in jobs 16, 23. Full oops: host
+      SimicsWorkspace/summitville.s3m_uart.log (guest serial console).
    Static entries (bridge fdb add ... static, jobs 34-38) work: offloaded
       before traffic, 0 slow path from seq 1, not aged, deleted from hw too,
       moved by the bridge when not sticky, sticky: traffic to the wire, no

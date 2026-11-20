@@ -23,6 +23,25 @@ $DEV/core/mount-image.sh
 cp $OUT/arch/x86/boot/bzImage $MOUNT/boot/bzImage
 cp -a $OUT/lib/modules/$RELEASE $MOUNT/root/lib/modules/
 depmod -b $MOUNT/root $RELEASE
+
+# --- Step 2b: driver selftests (build-kselftest.sh) to /kselftest ------------
+# $MOUNT/root is the guest's / (guest root's home is /home/root). Old ones are
+# removed: selftests of another kernel must not stay in the image.
+KSFT_ARCHIVE=$DEV/image/kselftest_output.tar.gz
+KSFT_DST=$MOUNT/root/kselftest
+rm -rf $KSFT_DST
+if [ -f $KSFT_ARCHIVE ]; then
+    NEED=$(gzip -l $KSFT_ARCHIVE | awk 'NR == 2 { print $2 }')
+    FREE=$(df -B1 --output=avail $MOUNT/root | tail -1)
+    if [ "$NEED" -gt "$FREE" ]; then
+        $DEV/core/umount-image.sh
+        echo "ERROR: selftests need $NEED bytes, image root has $FREE free" >&2
+        exit 1
+    fi
+    mkdir -p $KSFT_DST
+    tar xzf $KSFT_ARCHIVE --no-same-owner -C $KSFT_DST
+    echo "Installed driver selftests in /kselftest"
+fi
 $DEV/core/umount-image.sh
 
 # --- Step 3: repack the .craff Simics boots from -----------------------------

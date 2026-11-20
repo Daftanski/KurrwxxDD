@@ -24,8 +24,9 @@ setup-uefi-dev.sh <ip>        deploy uefi-dev to a host (+ Artifactory login)
 setup-kernel-dev.sh <ip> [copy]  deploy kernel-dev to a host (copy = files only)
 setup-artifactory-auth.sh <ip> Artifactory login on host (BIOS knobs)
 seed-bios-knob-tools.sh <ip>  BIOS knob tools to host cache, no login
-update-simics-kernel.sh <ip>  build kernel + copy (run in kernel tree);
-                              install = LAVA step "install"
+update-simics-kernel.sh <ip>  build kernel + selftests + copy (run in kernel
+                              tree); install = LAVA step "install"
+build-kselftest.sh <ip>       only the driver selftests (run in kernel tree)
 lava/add-device.sh <n>        add/update LAVA device for host n of config.txt
 uefi-dev/misc/dev/ut-nic-core.sh   nic-core unit tests (dev machine)
 
