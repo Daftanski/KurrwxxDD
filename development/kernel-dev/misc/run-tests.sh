@@ -5,7 +5,8 @@
 # Default: all. Run only through LAVA (lava-test.sh kernel ...), never by hand.
 # restart = core/restart.sh (returns at once), boot waits for the guest.
 # install = stop Simics, put image/kernel_output.tar.gz into the image, restart.
-# A failed restart or install, or boot without a guest (exit 2), stops the run.
+# A failed restart or install, boot without a guest (exit 2) or the watchdog
+# (kernel crash / hung guest) stops the run.
 HERE=$(dirname "$(readlink -f "$0")")
 DEV=/root/SimicsWorkspace/development/kernel-dev
 ALL="restart boot ixd ping"
@@ -45,6 +46,9 @@ if [ -n "$EXPAND" ]; then
     printf '%s\n' $STEPS
     exit 0
 fi
+# Watchdog (watchdog.sh) next to every test after boot: a kernel crash or hung
+# guest fails the step at once and stops the run. WATCHDOG=0: off.
+WD_FLAG=/tmp/kdev-guest-dead
 FAILED=""
 
 for S in $STEPS; do
@@ -68,10 +72,26 @@ for S in $STEPS; do
             fi
             # boot exit 2 = no guest: later steps cannot run.
             RC=0
-            $HERE/tests/$T.sh "${ARGS[@]}" || RC=$?
+            if [ $T = boot ] || [ "$WATCHDOG" = 0 ]; then
+                $HERE/tests/$T.sh "${ARGS[@]}" || RC=$?
+            else
+                # Own process group (set -m) so the watchdog can kill the whole test.
+                rm -f $WD_FLAG
+                set -m
+                $HERE/tests/$T.sh "${ARGS[@]}" &
+                TP=$!
+                set +m
+                WD_FLAG=$WD_FLAG $HERE/watchdog.sh $TP &
+                WP=$!
+                wait $TP || RC=$?
+                kill $WP 2> /dev/null
+                wait $WP 2> /dev/null
+            fi
             if [ $RC != 0 ]; then
                 FAILED+=" $S"
                 [ $T = boot ] && [ $RC = 2 ] && break
+                # Watchdog: guest crashed / hung, later steps cannot run.
+                [ -f $WD_FLAG ] && break
             fi ;;
     esac
 done

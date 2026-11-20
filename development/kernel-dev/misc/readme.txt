@@ -40,6 +40,14 @@
      frames are not dropped on the host (kselftest ping.py xdp mb needs 9000).
    - Kernel selftests (kselftest.sh): IPv4 only (F4: no IPv6 ND); skips
      pause/FEC/qstats/XDP offload (not supported by ixd).
+   - Watchdog (watchdog.sh): run-tests.sh runs every test after boot next to
+     it. Every 15 s it reads the guest's dmesg lines newer than the step start
+     (by timestamp) for Oops / BUG: / general protection / panic / hung task /
+     soft lockup, and counts a guest that does not answer 3 times as dead. Then:
+     "FAIL watchdog: ..." with the oops lines (wd| prefix), the test is killed
+     and the run stops (later steps: skip in kdev). Next run needs restart.
+     WARNING lines are not fatal (check_dmesg reports them). WATCHDOG=0: off.
+     Self-test: step wdcheck (fake BUG line, run last).
    - A hung guest (driver probe holding rtnl) blocks guest commands for
      minutes: use gt <seconds> "<cmd>" where a test must not wait.
    - First traffic after the first link up since boot can be slow: loop_up waits
