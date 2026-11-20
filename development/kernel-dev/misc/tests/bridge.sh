@@ -529,7 +529,10 @@ bage() {
 
 CASES=${*:2}
 CASES=${CASES:-sf0-sf1 lp-sf0 sf0-lp lp-sf0@1 host-sf0 sf0-host static static-wrong static-teardown mac-move sf-del uplink repr-updown}
+CI=0
 for C in $CASES; do
+    CI=$((CI + 1))
+    run_item $CI $(wc -w <<< "$CASES") $C
     case $C in
         age)    bage ;;
         static) scase ;;

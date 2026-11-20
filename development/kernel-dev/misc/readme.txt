@@ -159,6 +159,12 @@
       case (TX_TS_LATCHES_UPDATED) takes the lock for this exact race.
       Intermittent: queues.sh passed in jobs 16, 23. Full oops: host
       SimicsWorkspace/summitville.s3m_uart.log (guest serial console).
+      Reproducer (job 54): kselftest drivers/net:stats.py, subtest
+      procfs_downup_hammer (NETIF down/up in a loop while reading
+      /proc/net/dev): same Oops after the 1st cycle (guest time 1319 s), then
+      "Failed to enable vport 0: -110", a kworker in D state in
+      ixd_aux_pci_send_event (link change), the selftest never ends; the job
+      was canceled after 15 min. Guest needs restart.
    Static entries (bridge fdb add ... static, jobs 34-38) work: offloaded
       before traffic, 0 slow path from seq 1, not aged, deleted from hw too,
       moved by the bridge when not sticky, sticky: traffic to the wire, no
@@ -214,5 +220,7 @@
    7. Ported from BATS (drivers.ethernet.linux.bats): line 3 = "# From: BATS
       hsd<id>[, hsd<id>]". Port the idea, add loopback traffic, not the code.
       Changes: driver tests refuse to destroy someone's setup (SFs, bridges).
+   8. Progress for kdev: a test with several parts calls run_item <i> <n> <name>
+      when part i starts, run_plan <n> when the part has n subtests (lib.sh).
    6. Add a test to a suite in run-tests.sh only after it passes alone (LAVA job
       with only that test).

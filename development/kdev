@@ -210,25 +210,54 @@ class Run:
             t = ts(e["dt"])
             if m.startswith("== failed:"):
                 if self.steps:
+                    self.close_item(self.steps[-1], t, on_event)
                     self.steps[-1]["end"] = t
                 self.verdict = m[len("== failed:"):].strip()
                 on_event and on_event("end", None, m)
             elif m.startswith("== "):
                 if self.steps:
+                    self.close_item(self.steps[-1], t, on_event)
                     self.steps[-1]["end"] = t
                     on_event and on_event("step_end", self.steps[-1], m)
-                self.steps.append(dict(name=m[3:], start=t, end=None, ok=0, bad=0, fails=[]))
+                self.steps.append(dict(name=m[3:], start=t, end=None, ok=0, bad=0, fails=[],
+                                       item=None, items=[]))
                 on_event and on_event("step", self.steps[-1], m)
+            elif self.steps and re.match(r"RUN \d+/\d+ ", m):
+                s = self.steps[-1]
+                i, n = re.match(r"RUN (\d+)/(\d+) ", m).groups()
+                self.close_item(s, t, on_event)
+                s["item"] = dict(i=int(i), n=int(n), name=m.split(" ", 2)[2], start=t,
+                                 end=None, plan=None, done=0, ok=0, bad=0)
+                s["items"].append(s["item"])
+                on_event and on_event("item", s, m)
+            elif self.steps and re.match(r"PLAN \d+$", m):
+                if self.steps[-1]["item"]:
+                    self.steps[-1]["item"]["plan"] = int(m.split()[1])
             elif self.steps and (m.startswith("PASS ") or m.startswith("FAIL ")):
                 s = self.steps[-1]
+                it = s["item"]
                 if m.startswith("PASS "):
                     s["ok"] += 1
                 else:
                     s["bad"] += 1
                     s["fails"].append(m)
+                if it:
+                    it["done"] += 1
+                    it["ok" if m.startswith("PASS ") else "bad"] += 1
                 on_event and on_event("check", s, m)
+            elif self.steps and self.steps[-1]["item"] and re.match(r"INFO (SKIP|XFAIL) ", m):
+                self.steps[-1]["item"]["done"] += 1
+                on_event and on_event("other", self.steps[-1], m)
             elif self.steps:
                 on_event and on_event("other", self.steps[-1], m)
+
+    @staticmethod
+    def close_item(s, t, on_event):
+        it = s.get("item")
+        if it and it["end"] is None:
+            it["end"] = t
+            on_event and on_event("item_end", s, it)
+        s["item"] = None
 
     def step_failed(self, s):
         if self.verdict is None:
@@ -280,6 +309,15 @@ def watch(jid, verbose=False, planned=None):
             out(c(BOLD, f"▶ [{n}/{total or '?'}] {s['name']}") + c(DIM, f"  started {s['start'].astimezone():%H:%M:%S}"))
         elif kind == "step_end":
             step_line(s)
+        elif kind == "item":
+            it = s["item"]
+            out("    " + c(CYAN, f"▸ [{it['i']}/{it['n']}] {it['name']}"))
+        elif kind == "item_end":
+            it = m
+            d = fmt_dur((it["end"] - it["start"]).total_seconds())
+            mark = c(RED, "✘") if it["bad"] else c(GREEN, "✔")
+            out(f"    {mark} [{it['i']}/{it['n']}] {it['name']}  {it['ok']} passed, {it['bad']} failed"
+                + c(DIM, f", {d}"))
         elif kind == "check":
             if m.startswith("FAIL "):
                 out("    " + c(RED, m[:300]))
@@ -319,6 +357,11 @@ def watch(jid, verbose=False, planned=None):
                 head = (f"[{len(run.steps)}/{total or '?'}] {s['name']} "
                         f"{fmt_dur((now_lava() - s['start']).total_seconds())}"
                         if s else "starting")
+                it = s and s["item"]
+                if it:
+                    sub = f"{it['done']}/{it['plan']} subtests" if it["plan"] else f"{it['done']} done"
+                    head += (f" | {it['i']}/{it['n']} {it['name']} "
+                             f"{fmt_dur((now_lava() - it['start']).total_seconds())} ({sub})")
                 show_status(c(CYAN, f"⏳ {head}") + f" | {c(GREEN, str(ok))} passed {c(RED if bad else DIM, str(bad))} failed"
                             + c(DIM, f" | job {fmt_dur((now_lava() - start).total_seconds())}"))
             time.sleep(2 if state == "Running" else 5)
@@ -350,6 +393,10 @@ def summary(jid, run, j):
         d = fmt_dur(((s["end"] or s["start"]) - s["start"]).total_seconds())
         r = c(RED, "FAIL") if run.step_failed(s) else c(GREEN, "PASS")
         print(f"  {r}  {s['name']:<{width}}  {s['ok']:>4} passed {s['bad']:>3} failed  {d:>7}")
+        for it in s["items"]:
+            ir = c(RED, "✘") if it["bad"] else c(GREEN, "✔")
+            idur = fmt_dur(((it["end"] or s["end"] or it["start"]) - it["start"]).total_seconds())
+            print(f"        {ir} {it['name']:<{max(width - 2, 1)}} {it['ok']:>4} passed {it['bad']:>3} failed  {idur:>7}")
     rest = list(run.planned)
     for name in done:
         if name in rest:
@@ -410,6 +457,14 @@ def cmd_status():
             if st is s:
                 print(f"  {c(CYAN, '⏳')}  {st['name']}  {st['ok']} passed {st['bad']} failed, "
                       f"{fmt_dur((now - st['start']).total_seconds())} so far")
+                for it in st["items"]:
+                    if it["end"] is None:
+                        sub = f", {it['done']}/{it['plan']} subtests" if it["plan"] else ""
+                        print(f"        {c(CYAN, '⏳')} [{it['i']}/{it['n']}] {it['name']}  "
+                              f"{fmt_dur((now - it['start']).total_seconds())}{sub}")
+                    else:
+                        ir = c(RED, "✘") if it["bad"] else c(GREEN, "✔")
+                        print(f"        {ir} [{it['i']}/{it['n']}] {it['name']}  {it['ok']} passed {it['bad']} failed")
             else:
                 r = c(RED, "FAIL") if run.step_failed(st) else c(GREEN, "PASS")
                 print(f"  {r}  {st['name']}  {st['ok']} passed {st['bad']} failed")

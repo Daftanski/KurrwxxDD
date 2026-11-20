@@ -6,7 +6,10 @@ N=10
 guest_need
 dmesg_mark
 
+PI=0
 for PAIR in $PAIRS; do
+    PI=$((PI + 1))
+    run_item $PI $(wc -w <<< "$PAIRS") "pair $PAIR"
     read -r A B <<< "$(pair_split $PAIR)"
     loop_up $A $B || continue
     RXA=$(tap_rx $A)

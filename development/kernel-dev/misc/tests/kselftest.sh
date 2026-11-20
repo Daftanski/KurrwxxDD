@@ -39,13 +39,19 @@ at_exit "g \"rm -f $K/drivers/net/net.config $K/drivers/net/hw/net.config\""
 # top "ok 1 selftests: drivers/net: ping.py [# SKIP]" / "not ok ... # exit=1".
 ARGS=""
 for T in $TESTS; do ARGS+=" -t $T"; done
+# Streamed: each line is handled as it comes (live progress in kdev).
 OUT=/tmp/kdev-kselftest.log
-g "cd $K && PYTHONPATH=$K/pylib ./run_kselftest.sh --override-timeout $TIMEOUT $ARGS" > $OUT 2>&1 || true
-sed 's/^/  | /' $OUT
+NT=$(wc -w <<< "$TESTS")
+I=0
 CUR=""
 while IFS= read -r L; do
+    echo "  | $L"
     if [[ $L =~ ^#\ selftests:\ (.+)$ ]]; then
         CUR=${BASH_REMATCH[1]// /}
+        I=$((I + 1))
+        run_item $I $NT "$CUR"
+    elif [[ $L =~ ^#\ 1\.\.([0-9]+)$ ]]; then
+        run_plan ${BASH_REMATCH[1]}
     elif [[ $L =~ ^#\ (not\ )?ok\ [0-9]+\ ([^ #]+)(.*)$ ]]; then
         N="$CUR ${BASH_REMATCH[2]}"
         if [[ ${BASH_REMATCH[3]} == *"# SKIP"* ]]; then
@@ -66,7 +72,7 @@ while IFS= read -r L; do
             check "$N (exit)" "${BASH_REMATCH[1]:-ok}${BASH_REMATCH[4]}" "^ok"
         fi
     fi
-done < $OUT
+done < <(g "cd $K && PYTHONPATH=$K/pylib ./run_kselftest.sh --override-timeout $TIMEOUT $ARGS" 2>&1 | tee $OUT || true)
 check_ge "selftests run (top-level results)" "$(grep -cE '^(not )?ok [0-9]+ selftests:' $OUT || true)" $(wc -w <<< "$TESTS")
 
 loop_down

@@ -402,6 +402,16 @@ check_dmesg() {
     [ -z "$BAD" ] || echo "$BAD"
 }
 
+# --- Progress (shown live by kdev) ---------------------------------------------
+# run_item <i> <n> <name>: item i of n of this test starts (case, pair, selftest).
+# run_plan <n>: the current item has n subtests (when known).
+run_item() {
+    echo "RUN $1/$2 $3"
+}
+run_plan() {
+    echo "PLAN $1"
+}
+
 # --- Results -----------------------------------------------------------------
 # check <label> <value> <regex>
 check() {
