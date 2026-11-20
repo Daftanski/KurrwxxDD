@@ -15,11 +15,15 @@ shift 2
 STEPS=${*:-all}
 PFP=FALSE
 [ "$TAG" = pfp ] && PFP=TRUE
-JOB=$(sed -e "s/^job_name: .*/job_name: \"$SETUP $TAG: $STEPS\"/" \
-          -e "s/^tags: .*/tags: [$TAG]/" \
-          -e "s/SETUP: .*/SETUP: \"$SETUP\"/" \
-          -e "s/STEPS: .*/STEPS: \"$STEPS\"/" \
-          -e "s/PFP: .*/PFP: \"$PFP\"/" jobs/simics.yaml)
+# "|" as sed separator: steps may contain "/" (kselftest:0:1,drivers/net:ping.py).
+case $STEPS in
+    *[\|\&\"]*) echo "steps must not contain | & or \"" >&2; exit 1 ;;
+esac
+JOB=$(sed -e "s|^job_name: .*|job_name: \"$SETUP $TAG: $STEPS\"|" \
+          -e "s|^tags: .*|tags: [$TAG]|" \
+          -e "s|SETUP: .*|SETUP: \"$SETUP\"|" \
+          -e "s|STEPS: .*|STEPS: \"$STEPS\"|" \
+          -e "s|PFP: .*|PFP: \"$PFP\"|" jobs/simics.yaml)
 python3 -c 'import json,sys; print(json.dumps({"definition": sys.stdin.read()}))' <<< "$JOB" |
     curl -s --noproxy '*' -H "Authorization: Token $LAVA_TOKEN" \
          -H 'Content-Type: application/json' -d @- \
