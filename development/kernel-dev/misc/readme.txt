@@ -35,6 +35,8 @@
      to them are dropped. loop_wait_dad before IPv6 traffic.
    - Several guest captures at once: gcap_start <dev> <filter> <id>,
      gcap_stop <id ...> (one stop call: each guest sleep costs ~30x).
+   - Loopback cable (host taps + bridge) runs at the guest's max MTU: jumbo
+     frames are not dropped on the host (kselftest ping.py xdp mb needs 9000).
    - A hung guest (driver probe holding rtnl) blocks guest commands for
      minutes: use gt <seconds> "<cmd>" where a test must not wait.
    - First traffic after the first link up since boot can be slow: loop_up waits

@@ -174,14 +174,19 @@ loop_up() {
         LOOP_SAVE[taddr$P]=$(ip -o -4 addr show dev $T | awk '{print $4}' | tr '\n' ' ')
     done
 
-    # Host cable. No STP, no forward delay: forwards at once.
+    # Host cable. No STP, no forward delay: forwards at once. A cable has no MTU:
+    # taps + bridge get the guest's max MTU, else frames above 1500 (jumbo MTU
+    # set on the guest ports by a test) are dropped on the host without a trace.
+    local CABLE
+    CABLE=$(g "ip -d link show dev $LOOP_DEV_A" | grep -oP 'maxmtu \K[0-9]+' || echo 1500)
     ip link add $LOOP_BR type bridge stp_state 0 forward_delay 0
     for P in $1 $2; do
         ip addr flush dev $(tap $P)
+        ip link set $(tap $P) mtu $CABLE
         ip link set $(tap $P) master $LOOP_BR
         ip link set $(tap $P) up
     done
-    ip link set $LOOP_BR up
+    ip link set $LOOP_BR mtu $CABLE up
 
     # Guest: B into the netns.
     g "ip netns add $LOOP_NS 2> /dev/null; ip link set $LOOP_DEV_B netns $LOOP_NS
@@ -255,11 +260,9 @@ loop_wait_dad() {
     return 0
 }
 
-# loop_mtu <mtu>: MTU on both guest netdevs and both host taps (the bridge follows).
+# loop_mtu <mtu>: MTU on both guest netdevs (the host cable is at max already).
 # Prints the guest errors (if refused); loop_down restores.
 loop_mtu() {
-    ip link set $(tap $LOOP_A) mtu $1
-    ip link set $(tap $LOOP_B) mtu $1
     g "ip link set $LOOP_DEV_A mtu $1; ip -n $LOOP_NS link set $LOOP_DEV_B mtu $1" 2>&1 || true
 }
 
