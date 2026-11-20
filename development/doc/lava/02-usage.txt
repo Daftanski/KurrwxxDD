@@ -12,7 +12,7 @@ People: development/kdev (links: ~/.local/bin/kdev, ~/lava/svl/kdev)
   kdev run [-s uefi] [-t tag] [-v] [--no-deploy] <step ...>
       kdev run bridge                 one test
       kdev run kselftest bridge:0:1,static
-      kdev run restart boot full      fresh guest + whole suite
+      kdev run restart kselftest      fresh guest (boot added) + selftests
   kdev status    hosts, running job (each step PASS/FAIL so far,
                  current step + time, next steps), queue, last jobs
   kdev watch [job]   live view (default: running / last job)

@@ -3,7 +3,8 @@
 #        run-tests.sh expand <step ...>   only print the resolved steps
 #        run-tests.sh list         catalog: one line per test (args, what, Needs, Changes, Time) + suites
 # Default: all. Run only through LAVA (lava-test.sh kernel ...), never by hand.
-# restart = core/restart.sh (returns at once), boot waits for the guest.
+# restart = core/restart.sh (returns at once), boot waits for the guest; boot is
+# added after restart / install when the next step is not boot.
 # install = stop Simics, put image/kernel_output.tar.gz into the image, restart.
 # A failed restart or install, boot without a guest (exit 2) or the watchdog
 # (kernel crash / hung guest) stops the run.
@@ -41,6 +42,18 @@ for S in ${*:-all}; do
         *)      STEPS+=" $S" ;;
     esac
 done
+# restart / install only start Simics: boot (wait for the guest) must follow.
+# Added when the next step is not boot already.
+FIXED=""
+PREV=""
+for S in $STEPS; do
+    [[ $PREV == restart || $PREV == install ]] && [[ $S != boot && $S != boot:* ]] && FIXED+=" boot"
+    FIXED+=" $S"
+    PREV=$S
+done
+[[ $PREV == restart || $PREV == install ]] && FIXED+=" boot"
+STEPS=$FIXED
+
 # expand: print the steps the run would do (suites resolved), one per line.
 if [ -n "$EXPAND" ]; then
     printf '%s\n' $STEPS

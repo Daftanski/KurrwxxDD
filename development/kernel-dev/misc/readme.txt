@@ -14,7 +14,8 @@
    ~/lava/svl/lava-test.sh kernel <tag> <step ...>   (AI: 3-5 line answer)
    step = test name, name:arg,arg (= tests/name.sh arg arg), restart, install,
           or suite (all, net, feat, driver, full).
-     restart  - kill Simics, start it again (boot waits for the guest)
+     restart  - kill Simics, start it again; boot (waits ~6 min for the guest)
+                is added after it when not given: "restart kselftest" works
      install  - image/kernel_output.tar.gz (from update-simics-kernel.sh) into
                 the image, then restart. Follow with boot.
    Examples: lava-test.sh kernel pfp install boot ixd ping
