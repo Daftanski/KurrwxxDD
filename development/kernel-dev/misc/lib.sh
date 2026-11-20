@@ -144,6 +144,17 @@ pair_split() {
 loop_up() {
     local P D M T
     loop_down
+    # Leftover of a test killed before its EXIT trap (LAVA cancel, timeout): our
+    # own bridge name, one job per host, so it is stale. Guest side: netns.
+    if ip link show $LOOP_BR > /dev/null 2>&1; then
+        echo "INFO stale host bridge $LOOP_BR (killed test?) removed"
+        for T in $(ls /sys/class/net/$LOOP_BR/brif 2> /dev/null); do ip link set $T nomaster || true; done
+        ip link del $LOOP_BR || true
+    fi
+    if g "ip netns list" | grep -qw $LOOP_NS; then
+        echo "INFO stale guest netns $LOOP_NS removed"
+        g "for D in \$(ip -n $LOOP_NS -o link | awk -F': ' '{print \$2}' | cut -d@ -f1 | grep -v '^lo$'); do ip -n $LOOP_NS link set \$D netns 1; done; ip netns del $LOOP_NS" || true
+    fi
     for P in $1 $2; do
         D=$(guest_dev $P)
         M=$( [ -n "$D" ] && g "ip -o link show dev $D" | grep -oP ' master \K\S+' || true)
